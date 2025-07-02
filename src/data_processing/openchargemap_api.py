@@ -60,7 +60,8 @@ class OpenChargeMapAPI:
             'distance': distance_km,
             'maxresults': max_results,
             'compact': 'false',  # Get detailed information
-            'verbose': 'false'
+            'verbose': 'false',
+            'key': self.api_key
         }
         
         if country_code:
@@ -101,7 +102,8 @@ class OpenChargeMapAPI:
         params = {
             'output': 'json',
             'id': station_id,
-            'compact': 'true' if compact else 'false'
+            'compact': 'true' if compact else 'false',
+            'key': self.api_key
         }
         
         try:
@@ -130,7 +132,8 @@ class OpenChargeMapAPI:
         
         try:
             url = f"{self.base_url}/operators/"
-            params = {'output': 'json'}
+            params = {'output': 'json',
+                      'key': self.api_key}
             response = self.session.get(url, params=params, timeout=15)
             
             if response.status_code == 200:
@@ -383,9 +386,22 @@ def get_bay_area_stations(api_key: str) -> pd.DataFrame:
     api = OpenChargeMapAPI(api_key)
     return api.get_stations_for_region(bay_area_bounds, grid_size=4, country_code='US')
 
+
+def get_api_key() -> str:
+    """Get API key from environment variable"""
+    api_key = os.getenv('OPENCHARGEMAP_API_KEY')
+    if not api_key:
+        raise ValueError(
+            "OpenChargeMap API key not found. Please set the OPENCHARGEMAP_API_KEY environment variable.\n"
+            "You can get a free API key from: https://openchargemap.org/site/develop/api  \n"
+            "in powershell $env:OPENCHARGEMAP_API_KEY='XXXXXX'"
+
+        )
+    return api_key
+
 if __name__ == "__main__":
     # You'll need to set your API key here
-    API_KEY = "72a807a0-c288-474e-b4f8-885af0dc306a"
+    API_KEY = get_api_key()
     
     # Run tests
     test_api_integration(API_KEY)
