@@ -120,9 +120,8 @@ class SyntheticEVGenerator:
             logger.error(f"Failed to load road network: {e}")
             # Fallback: create a simplified mock network for testing
             logger.info("Creating simplified mock network for testing...")
-            return self._create_mock_network()
-
-
+            self.road_network = self._create_mock_network()  # Fix: assign to self.road_network
+            return self.road_network
 
     def _create_mock_network(self) -> nx.MultiDiGraph:
         """Create a simplified mock road network for testing when OSM fails"""
@@ -192,6 +191,7 @@ class SyntheticEVGenerator:
         logger.info(f"Created mock network with {len(G.nodes)} nodes and {len(G.edges)} edges")
         return G
 
+    
 
 
     def generate_fleet_vehicles(self) -> List[Dict]:
@@ -463,14 +463,24 @@ class SyntheticEVGenerator:
                        vehicle: Dict, date: datetime, trip_id: int) -> Dict:
         """Generate realistic route using OSM road network"""
         
+        # Ensure road network is loaded
         if self.road_network is None:
             logger.warning("Road network not loaded. Loading now...")
             self.load_road_network()
+        
+        # Double check that we have a network
+        if self.road_network is None:
+            logger.error("Failed to load any road network")
+            return None
         
         try:
             # Find nearest nodes in road network
             origin_node = self._find_nearest_node(origin[0], origin[1])
             dest_node = self._find_nearest_node(destination[0], destination[1])
+            
+            if origin_node is None or dest_node is None:
+                logger.error("Could not find nearest nodes")
+                return None
             
             # Calculate shortest path
             try:
@@ -479,7 +489,12 @@ class SyntheticEVGenerator:
                 )
             except nx.NetworkXNoPath:
                 logger.warning(f"No path found between {origin} and {destination}")
-                return None
+                # Try without weight
+                try:
+                    path = nx.shortest_path(self.road_network, origin_node, dest_node)
+                except nx.NetworkXNoPath:
+                    logger.error("No path found even without weight")
+                    return None
             
             # Extract route details
             route_coords = []
@@ -505,11 +520,19 @@ class SyntheticEVGenerator:
                     edge_data = self.road_network.edges[node1, node2, 0]
                 except KeyError:
                     # Fallback for mock network
-                    edge_data = list(self.road_network[node1][node2].values())[0]
+                    try:
+                        edge_data = list(self.road_network[node1][node2].values())[0]
+                    except (KeyError, IndexError):
+                        # Create default edge data
+                        edge_data = {
+                            'length': geodesic(coord1, coord2).meters,
+                            'speed_kph': 50,
+                            'travel_time': geodesic(coord1, coord2).meters / (50 * 1000 / 3600)
+                        }
                 
                 # Speed and distance
                 speed_kmh = edge_data.get('speed_kph', 50)  # Default 50 km/h
-                distance_m = edge_data.get('length', 100)   # Default 100m
+                distance_m = edge_data.get('length', geodesic(coord1, coord2).meters)   # Calculate if not available
                 
                 route_speeds.append(speed_kmh)
                 total_distance += distance_m / 1000  # Convert to km
@@ -546,8 +569,10 @@ class SyntheticEVGenerator:
             
         except Exception as e:
             logger.error(f"Error generating route: {e}")
+            import traceback
+            traceback.print_exc()
             return None
-
+    
 
 
 
@@ -1112,6 +1137,8 @@ class SyntheticEVGenerator:
         
         return max(available_stations, key=station_score)
     
+
+
     def generate_complete_dataset(self, num_days: int = 30) -> Dict[str, pd.DataFrame]:
         """Generate complete synthetic EV fleet dataset"""
         
@@ -1123,9 +1150,9 @@ class SyntheticEVGenerator:
         all_vehicle_states = []
         all_weather_data = []
         
-        # Load road network
-        if self.road_network is None:
-            self.load_road_network()
+        # Load road network ONCE at the beginning
+        logger.info("Loading road network...")
+        self.load_road_network()
         
         # Generate fleet vehicles
         if not self.fleet_vehicles:
@@ -1147,6 +1174,9 @@ class SyntheticEVGenerator:
             for vehicle in self.fleet_vehicles:
                 # Generate daily routes
                 daily_routes = self.generate_daily_routes(vehicle, current_date)
+                
+                # Filter out None routes
+                daily_routes = [route for route in daily_routes if route is not None]
                 all_routes.extend(daily_routes)
                 
                 # Generate charging sessions
@@ -1190,7 +1220,11 @@ class SyntheticEVGenerator:
         self._print_dataset_summary(datasets)
         
         return datasets
-    
+
+
+
+
+
     def _create_routes_dataframe(self, all_routes: List[Dict]) -> pd.DataFrame:
         """Create routes DataFrame with flattened GPS and consumption data"""
         
