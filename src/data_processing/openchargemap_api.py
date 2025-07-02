@@ -362,6 +362,7 @@ def test_api_integration(api_key: str):
             detailed_station = api.get_station_by_id(station_id)
             if detailed_station:
                 print("Successfully retrieved detailed station info")
+                print(detailed_station)
     
     # Test 4: Get operators
     print("\nTest 4: Getting operators...")
