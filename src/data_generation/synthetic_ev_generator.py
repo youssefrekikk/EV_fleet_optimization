@@ -40,6 +40,31 @@ MAJOR_LOCATIONS = {
     'santa_clara': (37.3541, -122.0322)
 }
 
+# Driving styles (separate from driver profiles)
+DRIVING_STYLES = {
+    'eco_friendly': {
+        'efficiency_modifier': 0.85,  # 15% better efficiency
+        'speed_modifier': 0.9,       # 10% slower speeds
+        'acceleration_modifier': 0.7, # Gentle acceleration
+        'charging_threshold': 0.4,    # Charge when battery < 40%
+        'proportion': 0.25
+    },
+    'normal': {
+        'efficiency_modifier': 1.0,   # Baseline efficiency
+        'speed_modifier': 1.0,        # Normal speeds
+        'acceleration_modifier': 1.0, # Normal acceleration
+        'charging_threshold': 0.3,    # Charge when battery < 30%
+        'proportion': 0.5
+    },
+    'aggressive': {
+        'efficiency_modifier': 1.2,   # 20% worse efficiency
+        'speed_modifier': 1.1,        # 10% faster speeds
+        'acceleration_modifier': 1.4, # Hard acceleration
+        'charging_threshold': 0.25,   # Charge when battery < 25%
+        'proportion': 0.25
+    }
+}
+
 class SyntheticEVGenerator:
     def __init__(self, config_override: Optional[Dict] = None):
         """Initialize the synthetic EV data generator"""
@@ -82,46 +107,78 @@ class SyntheticEVGenerator:
         logger.info("Loading Bay Area road network...")
         
         try:
-            # Define bounding box
-            bounds = self.config['geography']
+            # Try multiple approaches to load the network
             
-            # Try different OSMnx API versions
+            # Approach 1: Try with place name first (most reliable)
             try:
-                # Newer OSMnx version (>= 1.0)
-                self.road_network = ox.graph_from_bbox(
-                    bbox=(bounds['north'], bounds['south'], bounds['east'], bounds['west']),
+                logger.info("Attempting to load network by place name...")
+                self.road_network = ox.graph_from_place(
+                    "San Francisco Bay Area, California, USA",
                     network_type='drive',
                     simplify=True
                 )
-            except TypeError:
+                logger.info("Successfully loaded network by place name")
+            except Exception as e1:
+                logger.warning(f"Place name approach failed: {e1}")
+                
+                # Approach 2: Try with expanded bounding box
                 try:
-                    # Alternative syntax
+                    logger.info("Attempting to load network with expanded bounds...")
+                    # Use more generous bounds
+                    expanded_bounds = {
+                        'north': 38.5,
+                        'south': 36.8,
+                        'east': -120.5,
+                        'west': -123.5
+                    }
+                    
                     self.road_network = ox.graph_from_bbox(
-                        bounds['north'], bounds['south'], bounds['east'], bounds['west'],
+                        north=expanded_bounds['north'],
+                        south=expanded_bounds['south'], 
+                        east=expanded_bounds['east'],
+                        west=expanded_bounds['west'],
                         network_type='drive',
                         simplify=True
                     )
-                except:
-                    # Last resort - use place name
-                    self.road_network = ox.graph_from_place(
-                        "San Francisco Bay Area, California, USA",
-                        network_type='drive',
-                        simplify=True
-                    )
+                    logger.info("Successfully loaded network with expanded bounds")
+                except Exception as e2:
+                    logger.warning(f"Expanded bounds approach failed: {e2}")
+                    
+                    # Approach 3: Try with specific city
+                    try:
+                        logger.info("Attempting to load network for San Francisco city...")
+                        self.road_network = ox.graph_from_place(
+                            "San Francisco, California, USA",
+                            network_type='drive',
+                            simplify=True
+                        )
+                        logger.info("Successfully loaded San Francisco network")
+                    except Exception as e3:
+                        logger.warning(f"San Francisco approach failed: {e3}")
+                        raise Exception("All network loading approaches failed")
             
-            # Add edge speeds and travel times
-            self.road_network = ox.add_edge_speeds(self.road_network)
-            self.road_network = ox.add_edge_travel_times(self.road_network)
-            
-            logger.info(f"Loaded road network with {len(self.road_network.nodes)} nodes and {len(self.road_network.edges)} edges")
-            return self.road_network
-            
+            # Add edge speeds and travel times if network was loaded successfully
+            if self.road_network is not None:
+                try:
+                    self.road_network = ox.add_edge_speeds(self.road_network)
+                    self.road_network = ox.add_edge_travel_times(self.road_network)
+                except Exception as e:
+                    logger.warning(f"Failed to add speeds/times: {e}")
+                
+                logger.info(f"Loaded road network with {len(self.road_network.nodes)} nodes and {len(self.road_network.edges)} edges")
+                return self.road_network
+            else:
+                raise Exception("Network is None")
+                
         except Exception as e:
             logger.error(f"Failed to load road network: {e}")
             # Fallback: create a simplified mock network for testing
             logger.info("Creating simplified mock network for testing...")
-            self.road_network = self._create_mock_network()  # Fix: assign to self.road_network
+            self.road_network = self._create_mock_network()
             return self.road_network
+
+
+
 
     def _create_mock_network(self) -> nx.MultiDiGraph:
         """Create a simplified mock road network for testing when OSM fails"""
@@ -200,7 +257,8 @@ class SyntheticEVGenerator:
         
         fleet_size = self.config['fleet']['fleet_size']
         vehicles = []
-        
+        home_charging_enabled = self.config['charging'].get('enable_home_charging', True)
+        home_charging_availability = self.config['charging'].get('home_charging_availability', 0.8)
         for vehicle_id in range(fleet_size):
             # Select vehicle model based on market share
             model_name = self._select_vehicle_model()
@@ -208,7 +266,13 @@ class SyntheticEVGenerator:
             
             # Select driver profile
             driver_profile = self._select_driver_profile()
-            
+            # Select driving style (behavioral pattern) - separate from profile
+            driving_style = self._select_driving_style()
+            # Determine home charging access
+            has_home_charging = (
+                home_charging_enabled and 
+                np.random.random() < home_charging_availability
+            )
             # Generate vehicle-specific characteristics
             vehicle = {
                 'vehicle_id': f'EV_{vehicle_id:03d}',
@@ -217,8 +281,9 @@ class SyntheticEVGenerator:
                 'efficiency': model_specs['efficiency'] * np.random.normal(1.0, 0.05),  # 5% variation
                 'max_charging_speed': model_specs['max_charging_speed'],
                 'driver_profile': driver_profile,
+                'driving_style': driving_style,
+                'has_home_charging': has_home_charging,
                 'home_location': self._generate_home_location(),
-                'work_location': self._generate_work_location(),
                 'current_battery_soc': np.random.uniform(0.3, 0.9),  # Start with random charge
                 'odometer': np.random.uniform(0, 50000),  # km
                 'last_service': datetime.now() - timedelta(days=np.random.randint(0, 365))
@@ -228,6 +293,8 @@ class SyntheticEVGenerator:
         
         self.fleet_vehicles = vehicles
         logger.info(f"Generated {len(vehicles)} fleet vehicles")
+        logger.info(f"Home charging enabled: {home_charging_enabled}")
+        logger.info(f"Vehicles with home charging: {sum(1 for v in vehicles if v['has_home_charging'])}")
         return vehicles
     
     def _select_vehicle_model(self) -> str:
@@ -242,6 +309,13 @@ class SyntheticEVGenerator:
         weights = [DRIVER_PROFILES[profile]['proportion'] for profile in profiles]
         return np.random.choice(profiles, p=weights)
     
+    def _select_driving_style(self) -> str:
+        """Select driving style based on proportions"""
+        styles = list(DRIVING_STYLES.keys())
+        weights = [DRIVING_STYLES[style]['proportion'] for style in styles]
+        return np.random.choice(styles, p=weights)
+
+
     def _generate_home_location(self) -> Tuple[float, float]:
         """Generate realistic home location"""
         # Bias towards residential areas
@@ -282,6 +356,7 @@ class SyntheticEVGenerator:
     def generate_daily_routes(self, vehicle: Dict, date: datetime) -> List[Dict]:
         """Generate realistic daily routes for a vehicle"""
         driver_profile = DRIVER_PROFILES[vehicle['driver_profile']]
+        driving_style = DRIVING_STYLES[vehicle['driving_style']]
         routes = []
         
         # Determine number of trips for the day
@@ -882,22 +957,24 @@ class SyntheticEVGenerator:
         else:
             return 'autumn'
     
-    def generate_charging_sessions(self, vehicle: Dict, routes: List[Dict], 
-                                 date: datetime) -> List[Dict]:
+    def generate_charging_sessions(self, vehicle: Dict, routes: List[Dict], date: datetime) -> List[Dict]:
         """Generate realistic charging sessions for a vehicle"""
         charging_sessions = []
         driver_profile = DRIVER_PROFILES[vehicle['driver_profile']]
+        driving_style = DRIVING_STYLES[vehicle['driving_style']]
         
         # Track battery state throughout the day
         current_soc = vehicle['current_battery_soc']
         battery_capacity = vehicle['battery_capacity']
         
-        # Home charging probability
-        home_charging_prob = driver_profile['home_charging_prob']
-        charging_threshold = driver_profile['charging_threshold']
+        # Use driving style for charging threshold instead of driver profile
+        charging_threshold = driving_style['charging_threshold']
         
-        # Check if vehicle needs charging at start of day
-        if current_soc < charging_threshold and np.random.random() < home_charging_prob:
+        # Check if vehicle needs charging at start of day (only if has home charging)
+        if (vehicle['has_home_charging'] and 
+            current_soc < charging_threshold and 
+            np.random.random() < 0.8):  # 80% chance to charge at home if available
+            
             # Home charging session
             home_session = self._generate_home_charging_session(
                 vehicle, date, current_soc
@@ -915,11 +992,12 @@ class SyntheticEVGenerator:
             # Check if charging is needed
             needs_charging = current_soc < charging_threshold
             
-            # Opportunistic charging (even if not needed)
+            # Opportunistic charging (even if not needed) - less likely if has home charging
+            opportunistic_prob = 0.1 if vehicle['has_home_charging'] else 0.3
             opportunistic_charging = (
                 current_soc < 0.7 and  # Less than 70%
-                np.random.random() < 0.3 and  # 30% chance
-                driver_profile == 'rideshare'  # More likely for rideshare
+                np.random.random() < opportunistic_prob and
+                vehicle['driver_profile'] == 'rideshare'  # More likely for rideshare
             )
             
             if needs_charging or opportunistic_charging:
@@ -932,14 +1010,19 @@ class SyntheticEVGenerator:
                     charging_sessions.append(charging_session)
                     current_soc = charging_session['end_soc']
         
-        # End of day home charging
-        if current_soc < 0.8 and np.random.random() < home_charging_prob:
+        # End of day home charging (only if has home charging)
+        if (vehicle['has_home_charging'] and 
+            current_soc < 0.8 and 
+            np.random.random() < 0.9):  # High probability to charge at home overnight
+            
             end_day_session = self._generate_home_charging_session(
                 vehicle, date + timedelta(hours=20), current_soc
             )
             charging_sessions.append(end_day_session)
         
         return charging_sessions
+
+
     
     def _generate_home_charging_session(self, vehicle: Dict, start_time: datetime, 
                                       start_soc: float) -> Dict:
@@ -966,7 +1049,7 @@ class SyntheticEVGenerator:
             'session_id': f"{vehicle['vehicle_id']}_{start_time.strftime('%Y%m%d_%H%M')}_home",
             'vehicle_id': vehicle['vehicle_id'],
             'charging_type': 'home',
-            'location': vehicle['home_location'],
+            'location': f"({float(vehicle['home_location'][0]):.6f}, {float(vehicle['home_location'][1]):.6f})",
             'start_time': start_time.isoformat(),
             'end_time': (start_time + timedelta(hours=charging_time_hours)).isoformat(),
             'start_soc': round(start_soc, 3),
@@ -1037,7 +1120,7 @@ class SyntheticEVGenerator:
             'charging_type': 'public',
             'station_id': selected_station.get('ocm_id', 'unknown'),
             'station_operator': selected_station.get('operator', 'Unknown'),
-            'location': (selected_station.get('latitude'), selected_station.get('longitude')),
+            'location': f"({float(selected_station.get('latitude', 0)):.6f}, {float(selected_station.get('longitude', 0)):.6f})",
             'start_time': date.isoformat(),
             'end_time': (date + timedelta(hours=charging_time_hours)).isoformat(),
             'start_soc': round(start_soc, 3),
