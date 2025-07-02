@@ -642,7 +642,29 @@ class SyntheticEVGenerator:
         """Calculate realistic energy consumption based on physics"""
         
         if not gps_trace or len(gps_trace) < 2:
-            return {'total_consumption_kwh': 0, 'efficiency_kwh_per_100km': 0}
+            return {
+                'total_consumption_kwh': 0, 
+                'total_distance_km': 0,
+                'efficiency_kwh_per_100km': 0,
+                'temperature_celsius': 20,
+                'temperature_efficiency_factor': 1.0,
+                'consumption_breakdown': {
+                    'rolling_resistance': 0,
+                    'aerodynamic_drag': 0,
+                    'elevation_change': 0,
+                    'acceleration': 0,
+                    'hvac': 0,
+                    'auxiliary': 0,
+                    'regenerative_braking': 0
+                },
+                'weather_conditions': {
+                    'temperature': 20,
+                    'is_raining': False,
+                    'wind_speed_kmh': 15,
+                    'humidity': 0.65,
+                    'season': 'spring'
+                }
+            }
         
         # Get vehicle specifications
         model_specs = EV_MODELS[vehicle['model']]
