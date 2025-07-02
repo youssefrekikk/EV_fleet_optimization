@@ -1,0 +1,95 @@
+"""
+Main configuration file for EV fleet optimization project
+Combines all configuration parameters and provides easy access
+"""
+
+from .ev_models import EV_MODELS
+from .driver_profiles import DRIVER_PROFILES
+from .physics_constants import PHYSICS_CONSTANTS, TEMPERATURE_EFFICIENCY
+
+# Fleet Configuration
+FLEET_CONFIG = {
+    'fleet_size': 50,
+    'simulation_days': 30,
+    'start_date': '2024-01-01',
+    'region': 'bay_area',
+    'depot_location': (37.7749, -122.4194),  # San Francisco
+    'operating_hours': {
+        'start': 6,  # 6 AM
+        'end': 22,   # 10 PM
+    }
+}
+
+# Simulation Parameters
+SIMULATION_CONFIG = {
+    'time_step_minutes': 5,
+    'weather_update_hours': 1,
+    'charging_decision_frequency': 15,  # minutes
+    'route_recalculation_threshold': 0.1,  # 10% battery remaining
+    'max_daily_distance_km': 500,
+    'min_charging_session_minutes': 15,
+}
+
+# Geographic Bounds (Bay Area)
+GEOGRAPHIC_BOUNDS = {
+    'north': 38.0,
+    'south': 37.2,
+    'east': -121.5,
+    'west': -122.8
+}
+
+# Charging Infrastructure
+CHARGING_CONFIG = {
+    'home_charging_power': 7.4,  # kW (Level 2)
+    'workplace_charging_power': 11,  # kW
+    'public_fast_charging_power': 150,  # kW
+    'charging_efficiency': 0.9,  # 90% efficiency
+    'peak_hours': [(17, 21)],  # 5 PM - 9 PM
+    'peak_pricing_multiplier': 1.5,
+    'base_electricity_cost': 0.15,  # USD per kWh
+}
+
+# Weather Configuration
+WEATHER_CONFIG = {
+    'base_temperature': 20,  # Celsius
+    'temperature_variation': 10,  # +/- degrees
+    'seasonal_amplitude': 8,  # seasonal temperature swing
+    'rain_probability': 0.15,  # 15% chance of rain
+    'wind_speed_avg': 15,  # km/h
+    'humidity_avg': 0.65,  # 65%
+}
+
+# Data Generation Settings
+DATA_GENERATION = {
+    'output_directory': 'data/synthetic',
+    'file_formats': ['csv', 'parquet'],
+    'compression': True,
+    'include_noise': True,
+    'noise_level': 0.02,  # 2% random noise
+    'missing_data_rate': 0.001,  # 0.1% missing data points
+}
+
+# Optimization Parameters
+OPTIMIZATION_CONFIG = {
+    'route_optimization_algorithm': 'dijkstra',
+    'charging_optimization_method': 'greedy',
+    'prediction_horizon_hours': 24,
+    'reoptimization_frequency_hours': 4,
+    'battery_buffer_percentage': 0.15,  # Keep 15% buffer
+    'max_detour_for_charging_km': 5,
+}
+
+# Export all configurations
+__all__ = [
+    'EV_MODELS',
+    'DRIVER_PROFILES', 
+    'PHYSICS_CONSTANTS',
+    'TEMPERATURE_EFFICIENCY',
+    'FLEET_CONFIG',
+    'SIMULATION_CONFIG',
+    'GEOGRAPHIC_BOUNDS',
+    'CHARGING_CONFIG',
+    'WEATHER_CONFIG',
+    'DATA_GENERATION',
+    'OPTIMIZATION_CONFIG'
+]
