@@ -40,8 +40,9 @@ GEOGRAPHIC_BOUNDS = {
 
 # Charging Infrastructure
 CHARGING_CONFIG = {
+    'enable_home_charging': True,
+    'home_charging_availability': 0.8,  # Add this - 80% of drivers have access
     'home_charging_power': 7.4,  # kW (Level 2)
-    'workplace_charging_power': 11,  # kW
     'public_fast_charging_power': 150,  # kW
     'charging_efficiency': 0.9,  # 90% efficiency
     'peak_hours': [(17, 21)],  # 5 PM - 9 PM
