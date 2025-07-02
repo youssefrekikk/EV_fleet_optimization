@@ -63,7 +63,7 @@ WEATHER_CONFIG = {
 DATA_GENERATION = {
     'output_directory': 'data/synthetic',
     'file_formats': ['csv', 'parquet'],
-    'compression': True,
+    'compression': False,
     'include_noise': True,
     'noise_level': 0.02,  # 2% random noise
     'missing_data_rate': 0.001,  # 0.1% missing data points

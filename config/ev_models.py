@@ -59,5 +59,15 @@ EV_MODELS = {
         'drag_coefficient': 0.288,
         'frontal_area': 2.85,       # m²
         'market_share': 0.08
+    },
+    'volkswagen_id4': {
+        'battery_capacity': 77,
+        'wltp_range': 520,          # km
+        'efficiency': 14.8,         # kWh/100km
+        'max_charging_speed': 125,
+        'weight': 2124,             # kg
+        'drag_coefficient': 0.28,
+        'frontal_area': 2.57,       # m²
+        'market_share': 0.10
     }
 }
