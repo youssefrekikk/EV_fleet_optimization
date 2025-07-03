@@ -74,7 +74,7 @@ class SyntheticEVGenerator:
         self.weather_data = []
         self.fleet_vehicles = []
         
-        # Initialize random seed for reproducibility
+        # Initialize random seed for reproducibility and testing remove when generating final data
         np.random.seed(42)
         random.seed(42)
         
@@ -107,58 +107,50 @@ class SyntheticEVGenerator:
         logger.info("Loading Bay Area road network...")
         
         try:
-            # Try multiple approaches to load the network
-            
-            # Approach 1: Try with place name first (most reliable)
+            # Try to load a larger connected network
             try:
-                logger.info("Attempting to load network by place name...")
+                logger.info("Attempting to load network for multiple Bay Area cities...")
+                # Load network for multiple connected cities
+                places = [
+                    "San Francisco, California, USA",
+                    "Oakland, California, USA", 
+                    "San Jose, California, USA",
+                    "Fremont, California, USA"
+                ]
+                
+                # Try to get a combined network
                 self.road_network = ox.graph_from_place(
-                    "San Francisco Bay Area, California, USA",
+                    places,
                     network_type='drive',
                     simplify=True
                 )
-                logger.info("Successfully loaded network by place name")
-            except Exception as e1:
-                logger.warning(f"Place name approach failed: {e1}")
+                logger.info("Successfully loaded multi-city network")
                 
-                # Approach 2: Try with expanded bounding box
+            except Exception as e1:
+                logger.warning(f"Multi-city approach failed: {e1}")
+                
+                # Fallback: Use a large bounding box that covers the whole Bay Area
                 try:
-                    logger.info("Attempting to load network with expanded bounds...")
-                    # Use more generous bounds
-                    expanded_bounds = {
-                        'north': 38.5,
-                        'south': 36.8,
-                        'east': -120.5,
-                        'west': -123.5
-                    }
+                    logger.info("Attempting to load network with large bounding box...")
                     
+                    # Large bounding box covering entire Bay Area
                     self.road_network = ox.graph_from_bbox(
-                        north=expanded_bounds['north'],
-                        south=expanded_bounds['south'], 
-                        east=expanded_bounds['east'],
-                        west=expanded_bounds['west'],
+                        bbox=(38.5, 36.8, -120.5, -123.5),  # (north, south, east, west)
                         network_type='drive',
                         simplify=True
                     )
-                    logger.info("Successfully loaded network with expanded bounds")
-                except Exception as e2:
-                    logger.warning(f"Expanded bounds approach failed: {e2}")
+                    logger.info("Successfully loaded network with large bounding box")
                     
-                    # Approach 3: Try with specific city
-                    try:
-                        logger.info("Attempting to load network for San Francisco city...")
-                        self.road_network = ox.graph_from_place(
-                            "San Francisco, California, USA",
-                            network_type='drive',
-                            simplify=True
-                        )
-                        logger.info("Successfully loaded San Francisco network")
-                    except Exception as e3:
-                        logger.warning(f"San Francisco approach failed: {e3}")
-                        raise Exception("All network loading approaches failed")
+                except Exception as e2:
+                    logger.warning(f"Large bounding box approach failed: {e2}")
+                    
+                    # Final fallback: Just use mock network
+                    logger.info("Using mock network as final fallback")
+                    self.road_network = self._create_mock_network()
+                    return self.road_network
             
-            # Add edge speeds and travel times if network was loaded successfully
-            if self.road_network is not None:
+            # Add edge speeds and travel times if we have a real network
+            if self.road_network is not None and len(self.road_network.nodes) > 1000:
                 try:
                     self.road_network = ox.add_edge_speeds(self.road_network)
                     self.road_network = ox.add_edge_travel_times(self.road_network)
@@ -168,14 +160,15 @@ class SyntheticEVGenerator:
                 logger.info(f"Loaded road network with {len(self.road_network.nodes)} nodes and {len(self.road_network.edges)} edges")
                 return self.road_network
             else:
-                raise Exception("Network is None")
+                raise Exception("Network too small or invalid")
                 
         except Exception as e:
             logger.error(f"Failed to load road network: {e}")
-            # Fallback: create a simplified mock network for testing
-            logger.info("Creating simplified mock network for testing...")
+            logger.info("Creating mock network for testing...")
             self.road_network = self._create_mock_network()
             return self.road_network
+
+
 
 
 
@@ -535,7 +528,7 @@ class SyntheticEVGenerator:
             return nearest_node
     
     def _generate_route(self, origin: Tuple[float, float], destination: Tuple[float, float],
-                       vehicle: Dict, date: datetime, trip_id: int) -> Dict:
+                vehicle: Dict, date: datetime, trip_id: int) -> Dict:
         """Generate realistic route using OSM road network"""
         
         # Ensure road network is loaded
@@ -555,7 +548,7 @@ class SyntheticEVGenerator:
             
             if origin_node is None or dest_node is None:
                 logger.error("Could not find nearest nodes")
-                return None
+                return self._generate_fallback_route(origin, destination, vehicle, date, trip_id)
             
             # Calculate shortest path
             try:
@@ -568,8 +561,8 @@ class SyntheticEVGenerator:
                 try:
                     path = nx.shortest_path(self.road_network, origin_node, dest_node)
                 except nx.NetworkXNoPath:
-                    logger.error("No path found even without weight")
-                    return None
+                    logger.warning("No path found even without weight - using fallback")
+                    return self._generate_fallback_route(origin, destination, vehicle, date, trip_id)
             
             # Extract route details
             route_coords = []
@@ -607,7 +600,7 @@ class SyntheticEVGenerator:
                 
                 # Speed and distance
                 speed_kmh = edge_data.get('speed_kph', 50)  # Default 50 km/h
-                distance_m = edge_data.get('length', geodesic(coord1, coord2).meters)   # Calculate if not available
+                distance_m = edge_data.get('length', geodesic(coord1, coord2).meters)
                 
                 route_speeds.append(speed_kmh)
                 total_distance += distance_m / 1000  # Convert to km
@@ -637,17 +630,53 @@ class SyntheticEVGenerator:
                 'total_time_minutes': total_time / 60,
                 'gps_trace': gps_trace,
                 'consumption_data': consumption_data,
-                'driver_profile': vehicle['driver_profile']
+                'driver_profile': vehicle['driver_profile'],
+                'route_type': 'osm_network'
             }
             
             return route_data
             
         except Exception as e:
             logger.error(f"Error generating route: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-    
+            return self._generate_fallback_route(origin, destination, vehicle, date, trip_id)
+
+    def _generate_fallback_route(self, origin: Tuple[float, float], destination: Tuple[float, float],
+                           vehicle: Dict, date: datetime, trip_id: int) -> Dict:
+        """Generate fallback route when OSM routing fails"""
+        
+        # Calculate straight-line distance
+        straight_distance = geodesic(origin, destination).kilometers
+        
+        # Add realistic detour factor (roads aren't straight lines)
+        detour_factor = np.random.uniform(1.2, 1.5)  # 20-50% longer than straight line
+        total_distance = straight_distance * detour_factor
+        
+        # Estimate travel time based on average speed
+        avg_speed_kmh = 35  # Average city driving speed
+        total_time_minutes = (total_distance / avg_speed_kmh) * 60
+        
+        # Generate simplified GPS trace (straight line with some variation)
+        gps_trace = self._generate_fallback_gps_trace(origin, destination, date, avg_speed_kmh)
+        
+        # Calculate energy consumption
+        consumption_data = self._calculate_energy_consumption(gps_trace, vehicle, date)
+        
+        route_data = {
+            'vehicle_id': vehicle['vehicle_id'],
+            'trip_id': f"{vehicle['vehicle_id']}_{date.strftime('%Y%m%d')}_{trip_id:02d}",
+            'date': date.strftime('%Y-%m-%d'),
+            'origin': origin,
+            'destination': destination,
+            'total_distance_km': total_distance,
+            'total_time_minutes': total_time_minutes,
+            'gps_trace': gps_trace,
+            'consumption_data': consumption_data,
+            'driver_profile': vehicle['driver_profile'],
+            'route_type': 'fallback_direct'
+        }
+        
+        return route_data
+
 
 
 
@@ -693,6 +722,53 @@ class SyntheticEVGenerator:
         
         return gps_trace
     
+    def _generate_fallback_gps_trace(self, origin: Tuple[float, float], destination: Tuple[float, float],
+                                date: datetime, avg_speed_kmh: float) -> List[Dict]:
+        """Generate simplified GPS trace for fallback routes"""
+        
+        # Number of GPS points (roughly every 30 seconds)
+        distance_km = geodesic(origin, destination).kilometers
+        travel_time_hours = distance_km / avg_speed_kmh
+        num_points = max(5, int(travel_time_hours * 120))  # 2 points per minute
+        
+        gps_trace = []
+        current_time = date
+        
+        for i in range(num_points):
+            # Linear interpolation between origin and destination
+            progress = i / (num_points - 1) if num_points > 1 else 0
+            
+            lat = origin[0] + (destination[0] - origin[0]) * progress
+            lon = origin[1] + (destination[1] - origin[1]) * progress
+            
+            # Add some random variation to make it more realistic
+            lat += np.random.normal(0, 0.0001)  # Small GPS noise
+            lon += np.random.normal(0, 0.0001)
+            
+            # Speed variation
+            speed = avg_speed_kmh * np.random.normal(1.0, 0.15)  # 15% variation
+            speed = np.clip(speed, 10, avg_speed_kmh * 1.3)
+            
+            gps_point = {
+                'timestamp': current_time.isoformat(),
+                'latitude': lat,
+                'longitude': lon,
+                'speed_kmh': speed,
+                'elevation_m': np.random.normal(50, 10),  # Random elevation
+                'heading': self._calculate_bearing(origin, destination),
+                'accuracy_m': np.random.uniform(3, 8)
+            }
+            
+            gps_trace.append(gps_point)
+            
+            # Update time
+            if i < num_points - 1:
+                time_increment = (travel_time_hours * 3600) / (num_points - 1)
+                current_time += timedelta(seconds=time_increment)
+        
+        return gps_trace
+
+
     def _calculate_heading(self, index: int, route_coords: List[Tuple[float, float]]) -> float:
         """Calculate heading/bearing between GPS points"""
         if index >= len(route_coords) - 1:
@@ -1280,21 +1356,26 @@ class SyntheticEVGenerator:
                 # Generate daily routes
                 daily_routes = self.generate_daily_routes(vehicle, current_date)
                 
-                # Filter out None routes
-                daily_routes = [route for route in daily_routes if route is not None]
-                all_routes.extend(daily_routes)
+                # Filter out None routes and log statistics
+                valid_routes = [route for route in daily_routes if route is not None]
+                failed_routes = len(daily_routes) - len(valid_routes)
+                
+                if failed_routes > 0:
+                    logger.info(f"Vehicle {vehicle['vehicle_id']}: {len(valid_routes)} successful routes, {failed_routes} fallback routes")
+                
+                all_routes.extend(valid_routes)
                 
                 # Generate charging sessions
                 charging_sessions = self.generate_charging_sessions(
-                    vehicle, daily_routes, current_date
+                    vehicle, valid_routes, current_date
                 )
                 all_charging_sessions.extend(charging_sessions)
                 
                 # Track vehicle state
-                total_distance = sum(route['total_distance_km'] for route in daily_routes)
+                total_distance = sum(route['total_distance_km'] for route in valid_routes)
                 total_consumption = sum(
                     route['consumption_data']['total_consumption_kwh'] 
-                    for route in daily_routes
+                    for route in valid_routes
                 )
                 
                 vehicle_state = {
@@ -1305,7 +1386,7 @@ class SyntheticEVGenerator:
                     'efficiency_kwh_per_100km': round(
                         (total_consumption / total_distance * 100) if total_distance > 0 else 0, 2
                     ),
-                    'num_trips': len(daily_routes),
+                    'num_trips': len(valid_routes),
                     'num_charging_sessions': len(charging_sessions),
                     'driver_profile': vehicle['driver_profile'],
                     'vehicle_model': vehicle['model']
