@@ -1315,6 +1315,32 @@ class SyntheticEVGenerator:
         
         return charging_sessions
 
+    def _calculate_charging_time(self, energy_needed: float, charging_power: float,
+                               start_soc: float, target_soc: float) -> float:
+        """Calculate realistic charging time with charging curve"""
+        
+        if energy_needed <= 0:
+            return 0
+        
+        # Simplified charging curve - charging slows down as battery fills
+        avg_soc = (start_soc + target_soc) / 2
+        
+        if avg_soc < 0.2:
+            power_factor = 1.0  # Full power at low SOC
+        elif avg_soc < 0.5:
+            power_factor = 0.95  # Slight reduction
+        elif avg_soc < 0.8:
+            power_factor = 0.8   # Moderate reduction
+        else:
+            power_factor = 0.5   # Significant reduction at high SOC
+        
+        effective_power = charging_power * power_factor
+        charging_time_hours = energy_needed / effective_power
+        
+        # Add some randomness for real-world variations
+        charging_time_hours *= np.random.normal(1.0, 0.1)  # 10% variation
+        
+        return max(0.25, charging_time_hours)  # Minimum 15 minutes
 
     
     def _generate_home_charging_session(self, vehicle: Dict, start_time: datetime, 
