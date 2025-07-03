@@ -119,10 +119,10 @@ class SyntheticEVGenerator:
             }
             
             self.road_network = ox.graph_from_bbox(
-                north=bbox_bounds['north'],
-                south=bbox_bounds['south'],
-                east=bbox_bounds['east'],
-                west=bbox_bounds['west'],
+                bbox_bounds['north'],
+                bbox_bounds['south'],
+                bbox_bounds['east'],
+                bbox_bounds['west'],
                 network_type='drive',
                 simplify=True,
                 retain_all=True  # Keep disconnected components
