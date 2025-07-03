@@ -205,9 +205,10 @@ class SyntheticEVGenerator:
                 retain_all=True
             )
             
-            if len(network.nodes) > 5000:
+            if len(network.nodes) > 1000:
                 logger.info(f"✅ Large bounding box successful: {len(network.nodes)} nodes")
-                self._add_network_attributes(network)
+                
+                network = self._add_network_attributes(network)
                 return network
             else:
                 logger.warning("⚠️ Bounding box network too small")
@@ -264,7 +265,7 @@ class SyntheticEVGenerator:
                         
                         if connectivity_score > 0.3:
                             logger.info(f"✅ Places approach successful: {len(network.nodes)} nodes")
-                            self._add_network_attributes(network)
+                            network = self._add_network_attributes(network)
                             return network
                     
                 except Exception as place_error:
@@ -286,7 +287,7 @@ class SyntheticEVGenerator:
             if len(network.nodes) > 1000:
                 logger.info(f"✅ Single city successful: {len(network.nodes)} nodes")
                 logger.warning("⚠️ Using limited SF network - some routes may be fallback")
-                self._add_network_attributes(network)
+                network = self._add_network_attributes(network)
                 return network
             
         except Exception as e:
@@ -476,23 +477,25 @@ class SyntheticEVGenerator:
         logger.info(f"Connectivity test: {successful_routes}/{total_tests} routes successful")
         return connectivity_score
 
-    def _add_network_attributes(self):
+    def _add_network_attributes(self, network):  # Add 'network' parameter
         """Add speed and travel time attributes to network edges"""
         try:
             logger.info("Adding edge speeds and travel times...")
-            self.road_network = ox.add_edge_speeds(self.road_network)
-            self.road_network = ox.add_edge_travel_times(self.road_network)
+            network = ox.add_edge_speeds(network)  # Use the parameter
+            network = ox.add_edge_travel_times(network)  # Use the parameter
             logger.info("Successfully added network attributes")
+            return network  # Return the modified network
         except Exception as e:
             logger.warning(f"Failed to add network attributes: {e}")
             # Add basic attributes manually
-            self._add_basic_network_attributes()
+            return self._add_basic_network_attributes(network)  # Pass network parameter
 
-    def _add_basic_network_attributes(self):
+
+    def _add_basic_network_attributes(self, network):  # Add network parameter
         """Add basic speed and travel time attributes manually"""
         logger.info("Adding basic network attributes manually...")
         
-        for u, v, key, data in self.road_network.edges(keys=True, data=True):
+        for u, v, key, data in network.edges(keys=True, data=True):  # Use parameter
             # Get edge length
             length = data.get('length', 100)  # Default 100m if missing
             
@@ -517,8 +520,11 @@ class SyntheticEVGenerator:
             speed_kmh = speed_map.get(highway_type, 40)  # Default 40 km/h
             
             # Add attributes
-            self.road_network.edges[u, v, key]['speed_kph'] = speed_kmh
-            self.road_network.edges[u, v, key]['travel_time'] = length / (speed_kmh * 1000 / 3600)
+            network.edges[u, v, key]['speed_kph'] = speed_kmh
+            network.edges[u, v, key]['travel_time'] = length / (speed_kmh * 1000 / 3600)
+        
+        return network  # Return the modified network
+
 
     def _create_enhanced_mock_network(self) -> nx.MultiDiGraph:
         """Create an enhanced mock network with better connectivity"""
