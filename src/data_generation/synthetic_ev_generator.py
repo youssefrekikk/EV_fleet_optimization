@@ -21,6 +21,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from config.ev_config import *
 from src.data_processing.openchargemap_api import OpenChargeMapAPI
 from dotenv import load_dotenv
+from src.data_generation.road_network_db import NetworkDatabase
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -75,6 +77,10 @@ class SyntheticEVGenerator:
         self.charging_stations = []
         self.weather_data = []
         self.fleet_vehicles = []
+
+        self.network_db = NetworkDatabase()
+
+
         self.ocm_api = None
         self._init_charging_api()
         # Initialize random seed for reproducibility and testing remove when generating final data
@@ -123,63 +129,103 @@ class SyntheticEVGenerator:
         
         return base_config
     
+
     def load_road_network(self) -> nx.MultiDiGraph:
-        """Load road network for the Bay Area with robust fallback strategies"""
-        logger.info("Loading Bay Area road network...")
+        """Load road network from database or create new one"""
         
-        # Strategy 1: Large bounding box (most reliable for connected network)
+        # Try to load existing network from database
+        if self.network_db.network_exists():
+            try:
+                logger.info("📁 Loading existing network from database...")
+                self.road_network = self.network_db.load_network()
+                
+                # Validate connectivity with Bay Area locations
+                test_locations = [
+                    (37.7749, -122.4194),  # San Francisco
+                    (37.8044, -122.2712),  # Oakland
+                    (37.3382, -122.0922),  # San Jose
+                    (37.5485, -122.9886),  # Fremont
+                    (37.4419, -122.1430),  # Palo Alto
+                ]
+                
+                connectivity = self.network_db.validate_network_connectivity(test_locations)
+                logger.info(f"📊 Loaded network connectivity: {connectivity:.2f}")
+                
+                if connectivity > 0.4:  # Accept 40%+ connectivity
+                    logger.info("✅ Using existing network from database")
+                    return self.road_network
+                else:
+                    logger.warning("⚠️ Loaded network has poor connectivity, rebuilding...")
+                    
+            except Exception as e:
+                logger.warning(f"❌ Failed to load existing network: {e}")
+        
+        # Create new network if none exists or existing one is poor
+        logger.info("🔨 Creating new road network...")
+        self.road_network = self._create_and_save_network()
+        return self.road_network
+
+    def _create_and_save_network(self) -> nx.MultiDiGraph:
+        """Create new network and save to database"""
+        
+        # Try OSM approaches first
+        network = self._try_osm_approaches()
+        
+        if network is None:
+            logger.info("🎭 OSM approaches failed, creating enhanced mock network...")
+            network = self._create_enhanced_mock_network()
+        
+        # Enhance network connectivity
+        network = self._enhance_network_connectivity(network)
+        
+        # Save to database
+        metadata = {
+            'source': 'osm' if hasattr(network, 'graph') and 'crs' in network.graph else 'mock',
+            'bay_area_bounds': self.config['geography'],
+            'connectivity_enhanced': True,
+            'creation_method': 'osm_with_fallback'
+        }
+        
+        logger.info("💾 Saving network to database...")
+        self.network_db.save_network(network, metadata)
+        
+        return network
+
+    def _try_osm_approaches(self) -> Optional[nx.MultiDiGraph]:
+        """Try different OSM loading strategies"""
+        
+        # Strategy 1: Large bounding box
         try:
-            logger.info("Attempting to load network with large Bay Area bounding box...")
-            
-            # Comprehensive Bay Area bounds - covers from Santa Rosa to San Jose
-            
-            bbox_bounds = (38.6,36.9,-120.8,-123.2)
-            self.road_network = ox.graph_from_bbox(
+            logger.info("🌐 Trying large bounding box approach...")
+            bbox_bounds = (38.6, 36.9, -120.8, -123.2)
+            network = ox.graph_from_bbox(
                 bbox=bbox_bounds,
                 network_type='drive',
                 simplify=True,
-                retain_all=True  # Keep disconnected components
+                retain_all=True
             )
             
-            # Check if network is large enough and connected
-            if len(self.road_network.nodes) > 5000:  # Reasonable size threshold
-                logger.info(f"Successfully loaded large bounding box network: {len(self.road_network.nodes)} nodes")
-                
-                # Test connectivity by checking if we can find paths between major cities
-                connectivity_score = self._test_network_connectivity()
-                logger.info(f"Network connectivity score: {connectivity_score:.2f}")
-                
-                if connectivity_score > 0.5:  # At least 50% of test routes work
-                    self._add_network_attributes()
-                    return self.road_network
-                else:
-                    logger.warning("Network has poor connectivity, trying alternative approach...")
-                    raise Exception("Poor network connectivity")
+            if len(network.nodes) > 5000:
+                logger.info(f"✅ Large bounding box successful: {len(network.nodes)} nodes")
+                self._add_network_attributes(network)
+                return network
             else:
-                logger.warning("Bounding box network too small, trying alternative...")
-                raise Exception("Network too small")
+                logger.warning("⚠️ Bounding box network too small")
                 
-        except Exception as e1:
-            logger.warning(f"Large bounding box approach failed: {e1}")
+        except Exception as e:
+            logger.warning(f"❌ Bounding box approach failed: {e}")
         
         # Strategy 2: Multiple connected places
         try:
-            logger.info("Attempting to load network for multiple connected Bay Area places...")
-            
-            # Try different combinations of places
+            logger.info("🏙️ Trying multiple places approach...")
             place_combinations = [
-                # Full Bay Area (if OSM recognizes it)
                 ["San Francisco Bay Area, California, USA"],
-                
-                # Major connected cities
                 [
                     "San Francisco, California, USA",
                     "Oakland, California, USA", 
                     "San Jose, California, USA",
                     "Fremont, California, USA"
                 ],
-                
-                # Core Bay Area counties
                 [
                     "San Francisco County, California, USA",
                     "Alameda County, California, USA",
@@ -189,62 +235,206 @@ class SyntheticEVGenerator:
             
             for places in place_combinations:
                 try:
-                    logger.info(f"Trying places: {places}")
+                    logger.info(f"🔍 Trying places: {places}")
                     
                     if len(places) == 1:
-                        self.road_network = ox.graph_from_place(
+                        network = ox.graph_from_place(
                             places[0],
                             network_type='drive',
                             simplify=True
                         )
                     else:
-                        self.road_network = ox.graph_from_place(
+                        network = ox.graph_from_place(
                             places,
                             network_type='drive',
                             simplify=True
                         )
                     
-                    if len(self.road_network.nodes) > 3000:
-                        connectivity_score = self._test_network_connectivity()
-                        logger.info(f"Places network connectivity: {connectivity_score:.2f}")
+                    if len(network.nodes) > 3000:
+                        # Test connectivity
+                        test_locations = [
+                            (37.7749, -122.4194),  # San Francisco
+                            (37.8044, -122.2712),  # Oakland
+                            (37.3382, -122.0922),  # San Jose
+                        ]
                         
-                        if connectivity_score > 0.3:  # Lower threshold for place-based networks
-                            self._add_network_attributes()
-                            logger.info(f"Successfully loaded places network: {len(self.road_network.nodes)} nodes")
-                            return self.road_network
+                        # Quick connectivity test
+                        connectivity_score = self._quick_connectivity_test(network, test_locations)
+                        logger.info(f"📊 Places network connectivity: {connectivity_score:.2f}")
+                        
+                        if connectivity_score > 0.3:
+                            logger.info(f"✅ Places approach successful: {len(network.nodes)} nodes")
+                            self._add_network_attributes(network)
+                            return network
                     
                 except Exception as place_error:
-                    logger.warning(f"Failed to load places {places}: {place_error}")
+                    logger.warning(f"❌ Failed places {places}: {place_error}")
                     continue
             
-            raise Exception("All place combinations failed")
-            
-        except Exception as e2:
-            logger.warning(f"Multiple places approach failed: {e2}")
+        except Exception as e:
+            logger.warning(f"❌ Multiple places approach failed: {e}")
         
-        # Strategy 3: Single large city as base
+        # Strategy 3: Single large city
         try:
-            logger.info("Attempting to load single city network (San Francisco)...")
-            
-            self.road_network = ox.graph_from_place(
+            logger.info("🌉 Trying single city approach (San Francisco)...")
+            network = ox.graph_from_place(
                 "San Francisco, California, USA",
                 network_type='drive',
                 simplify=True
             )
             
-            if len(self.road_network.nodes) > 1000:
-                logger.info(f"Loaded San Francisco network: {len(self.road_network.nodes)} nodes")
-                logger.warning("Using limited SF network - some long-distance routes may fail")
-                self._add_network_attributes()
-                return self.road_network
+            if len(network.nodes) > 1000:
+                logger.info(f"✅ Single city successful: {len(network.nodes)} nodes")
+                logger.warning("⚠️ Using limited SF network - some routes may be fallback")
+                self._add_network_attributes(network)
+                return network
             
-        except Exception as e3:
-            logger.warning(f"Single city approach failed: {e3}")
+        except Exception as e:
+            logger.warning(f"❌ Single city approach failed: {e}")
         
-        # Strategy 4: Enhanced mock network
-        logger.info("All OSM approaches failed, creating enhanced mock network...")
-        self.road_network = self._create_enhanced_mock_network()
-        return self.road_network
+        return None
+
+    def _quick_connectivity_test(self, network: nx.MultiDiGraph, test_locations: List[Tuple[float, float]]) -> float:
+        """Quick connectivity test for network validation"""
+        successful_routes = 0
+        total_tests = 0
+        
+        for i, origin in enumerate(test_locations):
+            for j, dest in enumerate(test_locations):
+                if i != j:
+                    total_tests += 1
+                    try:
+                        origin_node = self._find_nearest_node(origin[0], origin[1])
+                        dest_node = self._find_nearest_node(dest[0], dest[1])
+                        
+                        if origin_node and dest_node:
+                            nx.shortest_path(network, origin_node, dest_node)
+                            successful_routes += 1
+                    except:
+                        pass
+        
+        return successful_routes / total_tests if total_tests > 0 else 0
+
+    def _enhance_network_connectivity(self, network: nx.MultiDiGraph) -> nx.MultiDiGraph:
+        """Enhance network connectivity by adding synthetic connections where needed"""
+        
+        # Find disconnected components
+        undirected = network.to_undirected()
+        components = list(nx.connected_components(undirected))
+        
+        if len(components) > 1:
+            logger.info(f"🔗 Found {len(components)} disconnected components, adding bridges...")
+            
+            # Connect largest component to others
+            largest_component = max(components, key=len)
+            bridges_added = 0
+            
+            for component in components:
+                if component != largest_component:
+                    # Find closest nodes between components
+                    min_distance = float('inf')
+                    best_connection = None
+                    
+                    # Sample nodes for performance (don't check all combinations)
+                    sample_size = min(50, len(component), len(largest_component))
+                    component_sample = list(component)[:sample_size]
+                    largest_sample = list(largest_component)[:sample_size]
+                    
+                    for node1 in largest_sample:
+                        for node2 in component_sample:
+                            try:
+                                coord1 = (network.nodes[node1]['y'], network.nodes[node1]['x'])
+                                coord2 = (network.nodes[node2]['y'], network.nodes[node2]['x'])
+                                distance = geodesic(coord1, coord2).meters
+                                
+                                if distance < min_distance:
+                                    min_distance = distance
+                                    best_connection = (node1, node2)
+                            except:
+                                continue
+                    
+                    # Add synthetic bridge
+                    if best_connection and min_distance < 50000:  # Max 50km bridge
+                        node1, node2 = best_connection
+                        
+                        # Add bidirectional edges
+                        network.add_edge(node1, node2, 0,
+                                    length=min_distance,
+                                    speed_kph=60,
+                                    travel_time=min_distance / (60 * 1000 / 3600),
+                                    highway='synthetic_bridge')
+                        network.add_edge(node2, node1, 0,
+                                    length=min_distance,
+                                    speed_kph=60,
+                                    travel_time=min_distance / (60 * 1000 / 3600),
+                                    highway='synthetic_bridge')
+                        
+                        bridges_added += 1
+                        logger.info(f"🌉 Added synthetic bridge: {min_distance/1000:.1f}km")
+            
+            logger.info(f"✅ Added {bridges_added} synthetic bridges")
+        else:
+            logger.info("✅ Network is already fully connected")
+        
+        return network
+
+
+    def rebuild_network(self, force: bool = False):
+        """Rebuild and save the road network"""
+        if not force and self.network_db.network_exists():
+            logger.warning("Network already exists. Use force=True to rebuild anyway.")
+            return
+        
+        logger.info("🔨 Rebuilding road network...")
+        self.road_network = self._create_and_save_network()
+        logger.info("✅ Network rebuild complete")
+
+    def get_network_info(self) -> Dict:
+        """Get information about the current network"""
+        if not self.road_network:
+            if self.network_db.network_exists():
+                self.load_road_network()
+            else:
+                return {"status": "No network available"}
+        
+        # Test connectivity
+        test_locations = [
+            (37.7749, -122.4194),  # San Francisco
+            (37.8044, -122.2712),  # Oakland
+            (37.3382, -122.0922),  # San Jose
+            (37.5485, -122.9886),  # Fremont
+            (37.4419, -122.1430),  # Palo Alto
+        ]
+        
+        connectivity = self.network_db.validate_network_connectivity(test_locations)
+        
+        return {
+            "status": "Available",
+            "nodes": len(self.road_network.nodes),
+            "edges": len(self.road_network.edges),
+            "connectivity_score": connectivity,
+            "metadata": self.network_db.metadata,
+            "file_path": str(self.network_db.db_path),
+            "file_exists": self.network_db.network_exists()
+        }
+
+    def clear_network_cache(self):
+        """Clear the cached network to force rebuild"""
+        if self.network_db.network_exists():
+            os.remove(self.network_db.db_path)
+            logger.info("🗑️ Network cache cleared")
+        else:
+            logger.info("ℹ️ No network cache to clear")
+
+
+
+
+
+
+
+
+
+
 
     def _test_network_connectivity(self) -> float:
         """Test network connectivity by trying routes between major Bay Area locations"""
@@ -1878,6 +2068,11 @@ def main():
     # Initialize generator
     generator = SyntheticEVGenerator(config_override)
     
+
+    # Check network status
+    network_info = generator.get_network_info()
+    print(f"\n📊 Network Status: {network_info}")
+
     # Generate complete dataset
     datasets = generator.generate_complete_dataset(num_days=7)
     
