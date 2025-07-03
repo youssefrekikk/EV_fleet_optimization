@@ -6,11 +6,13 @@ import numpy as np
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 import logging
+import os
+from dotenv import load_dotenv
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+load_dotenv()
 class OpenChargeMapAPI:
     def __init__(self, api_key: str):
         self.api_key = api_key

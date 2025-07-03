@@ -20,12 +20,12 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from config.ev_config import *
 from src.data_processing.openchargemap_api import OpenChargeMapAPI
-
+from dotenv import load_dotenv
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+load_dotenv()
 # Key locations in Bay Area for route generation
 MAJOR_LOCATIONS = {
     'downtown_sf': (37.7749, -122.4194),
@@ -88,15 +88,18 @@ class SyntheticEVGenerator:
         try:
             # Try to get API key from environment
             api_key = os.getenv('OPENCHARGEMAP_API_KEY')
-            
+            print("API Key found:", api_key)
             if api_key:
                 self.ocm_api = OpenChargeMapAPI(api_key)
-                logger.info("OpenChargeMap API initialized")
+                logger.info("✅ OpenChargeMap API initialized successfully")
+                logger.info(f"API Key found: {api_key[:8]}...")  # Show first 8 chars
             else:
-                logger.warning("OpenChargeMap API key not found - will use mock charging stations")
+                logger.warning("❌ OpenChargeMap API key not found - will use mock charging stations")
+                logger.info("Set OPENCHARGEMAP_API_KEY environment variable to use real data")
                 
         except Exception as e:
-            logger.warning(f"Could not initialize OpenChargeMap API: {e}")
+            logger.error(f"❌ Could not initialize OpenChargeMap API: {e}")
+
 
     def _merge_config(self, override: Optional[Dict]) -> Dict:
         """Merge configuration with overrides"""
@@ -1250,6 +1253,8 @@ class SyntheticEVGenerator:
         else:
             return 'autumn'
     
+
+
     def generate_charging_sessions(self, vehicle: Dict, routes: List[Dict], date: datetime) -> List[Dict]:
         """Generate realistic charging sessions for a vehicle"""
         charging_sessions = []
@@ -1460,6 +1465,7 @@ class SyntheticEVGenerator:
         # Try to use real OpenChargeMap data first
         if self.ocm_api:
             try:
+                logger.info(f"🔍 Searching for charging stations near {location} using OpenChargeMap API...")
                 # Get real stations from OpenChargeMap
                 raw_stations = self.ocm_api.find_nearby_stations(
                     location[0], location[1], 
@@ -1467,7 +1473,7 @@ class SyntheticEVGenerator:
                     max_results=15,
                     country_code='US'
                 )
-                
+                logger.info(f"📡 OpenChargeMap returned {len(raw_stations)} raw stations")
                 # Convert to our expected format
                 stations = []
                 for raw_station in raw_stations:
@@ -1489,13 +1495,18 @@ class SyntheticEVGenerator:
                         stations.append(converted_station)
                 
                 if stations:
-                    logger.debug(f"Found {len(stations)} real charging stations via OpenChargeMap")
+                    logger.info(f"✅ Found {len(stations)} REAL charging stations via OpenChargeMap")
                     return sorted(stations, key=lambda x: x['distance_km'])
+                else:
+                    logger.warning("⚠️ OpenChargeMap returned stations but none were valid")
                     
             except Exception as e:
-                logger.warning(f"OpenChargeMap API failed: {e}, falling back to mock data")
+                logger.warning(f"❌ OpenChargeMap API failed: {e}, falling back to mock data")
+        else:
+            logger.debug("🔄 No OpenChargeMap API available, using mock stations")
         
-        # Fallback to your existing mock station generation
+        # Fallback to mock stations
+        logger.info(f"🎭 Generating MOCK charging stations near {location}")
         return self._generate_mock_charging_stations(location, radius_km)
 
     def _estimate_cost_from_power(self, power_kw: float) -> float:
@@ -1563,59 +1574,6 @@ class SyntheticEVGenerator:
 
 
 
-    def _find_nearby_charging_stations(self, location: Tuple[float, float], 
-                                     radius_km: int = 10) -> List[Dict]:
-        """Find nearby charging stations (mock implementation - would use real data)"""
-        # This would integrate with our OpenChargeMap API
-        # For now, generate some realistic mock stations
-        
-        num_stations = np.random.poisson(3)  # Average 3 stations nearby
-        stations = []
-        
-        for i in range(num_stations):
-            # Generate station within radius
-            angle = np.random.uniform(0, 2 * np.pi)
-            distance = np.random.uniform(0.5, radius_km)
-            
-            # Convert to lat/lon offset
-            lat_offset = (distance / 111.0) * np.cos(angle)
-            lon_offset = (distance / 111.0) * np.sin(angle)
-            
-            station_location = (
-                location[0] + lat_offset,
-                location[1] + lon_offset
-            )
-            
-            # Generate realistic station characteristics
-            station_types = ['AC Level 2', 'DC Fast Charger', 'Tesla Supercharger']
-            station_type = np.random.choice(station_types, p=[0.5, 0.4, 0.1])
-            
-            if station_type == 'AC Level 2':
-                max_power = np.random.choice([7.4, 11, 22], p=[0.6, 0.3, 0.1])
-                cost_per_kwh = np.random.uniform(0.25, 0.35)
-            elif station_type == 'DC Fast Charger':
-                max_power = np.random.choice([50, 75, 100, 150], p=[0.3, 0.3, 0.2, 0.2])
-                cost_per_kwh = np.random.uniform(0.35, 0.50)
-            else:  # Tesla Supercharger
-                max_power = np.random.choice([150, 250], p=[0.4, 0.6])
-                cost_per_kwh = np.random.uniform(0.30, 0.45)
-            
-            station = {
-                'ocm_id': f'mock_{i}_{int(location[0]*1000)}_{int(location[1]*1000)}',
-                'latitude': station_location[0],
-                'longitude': station_location[1],
-                'operator': np.random.choice(['ChargePoint', 'EVgo', 'Electrify America', 'Tesla']),
-                'max_power_kw': max_power,
-                'cost_usd_per_kwh': cost_per_kwh,
-                'connector_types': [station_type],
-                'availability': np.random.choice(['Available', 'Busy'], p=[0.7, 0.3]),
-                'distance_km': distance
-            }
-            
-            stations.append(station)
-        
-        return sorted(stations, key=lambda x: x['distance_km'])
-    
 
 
 
