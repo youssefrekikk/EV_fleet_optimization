@@ -19,6 +19,8 @@ import logging
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from config.ev_config import *
+from src.data_processing.openchargemap_api import OpenChargeMapAPI
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -73,13 +75,29 @@ class SyntheticEVGenerator:
         self.charging_stations = []
         self.weather_data = []
         self.fleet_vehicles = []
-        
+        self.ocm_api = None
+        self._init_charging_api()
         # Initialize random seed for reproducibility and testing remove when generating final data
         np.random.seed(42)
         random.seed(42)
         
         logger.info("Synthetic EV Generator initialized")
     
+    def _init_charging_api(self):
+        """Initialize OpenChargeMap API if key is available"""
+        try:
+            # Try to get API key from environment
+            api_key = os.getenv('OPENCHARGEMAP_API_KEY')
+            
+            if api_key:
+                self.ocm_api = OpenChargeMapAPI(api_key)
+                logger.info("OpenChargeMap API initialized")
+            else:
+                logger.warning("OpenChargeMap API key not found - will use mock charging stations")
+                
+        except Exception as e:
+            logger.warning(f"Could not initialize OpenChargeMap API: {e}")
+
     def _merge_config(self, override: Optional[Dict]) -> Dict:
         """Merge configuration with overrides"""
         base_config = {
@@ -445,73 +463,6 @@ class SyntheticEVGenerator:
 
 
 
-    def _create_mock_network(self) -> nx.MultiDiGraph:
-        """Create a simplified mock road network for testing when OSM fails"""
-        
-        # Create a simple grid network for the Bay Area
-        bounds = self.config['geography']
-        
-        # Create nodes in a grid pattern
-        G = nx.MultiDiGraph()
-        
-        # Grid parameters
-        lat_steps = 20
-        lon_steps = 20
-        
-        lats = np.linspace(bounds['south'], bounds['north'], lat_steps)
-        lons = np.linspace(bounds['west'], bounds['east'], lon_steps)
-        
-        node_id = 0
-        node_positions = {}
-        
-        # Create nodes
-        for i, lat in enumerate(lats):
-            for j, lon in enumerate(lons):
-                G.add_node(node_id, y=lat, x=lon)
-                node_positions[(i, j)] = node_id
-                node_id += 1
-        
-        # Create edges (connect adjacent nodes)
-        for i in range(lat_steps):
-            for j in range(lon_steps):
-                current_node = node_positions[(i, j)]
-                
-                # Connect to right neighbor
-                if j < lon_steps - 1:
-                    right_node = node_positions[(i, j + 1)]
-                    distance = geodesic(
-                        (lats[i], lons[j]), 
-                        (lats[i], lons[j + 1])
-                    ).meters
-                    
-                    G.add_edge(current_node, right_node, 0, 
-                              length=distance, 
-                              speed_kph=50, 
-                              travel_time=distance / (50 * 1000 / 3600))
-                    G.add_edge(right_node, current_node, 0, 
-                              length=distance, 
-                              speed_kph=50, 
-                              travel_time=distance / (50 * 1000 / 3600))
-                
-                # Connect to bottom neighbor
-                if i < lat_steps - 1:
-                    bottom_node = node_positions[(i + 1, j)]
-                    distance = geodesic(
-                        (lats[i], lons[j]), 
-                        (lats[i + 1], lons[j])
-                    ).meters
-                    
-                    G.add_edge(current_node, bottom_node, 0, 
-                              length=distance, 
-                              speed_kph=50, 
-                              travel_time=distance / (50 * 1000 / 3600))
-                    G.add_edge(bottom_node, current_node, 0, 
-                              length=distance, 
-                              speed_kph=50, 
-                              travel_time=distance / (50 * 1000 / 3600))
-        
-        logger.info(f"Created mock network with {len(G.nodes)} nodes and {len(G.edges)} edges")
-        return G
 
     
 
@@ -600,24 +551,6 @@ class SyntheticEVGenerator:
         
         return (base_location[0] + lat_offset, base_location[1] + lon_offset)
     
-    def _generate_work_location(self) -> Tuple[float, float]:
-        """Generate realistic work location"""
-        # Bias towards business districts
-        business_areas = [
-            'downtown_sf', 'silicon_valley', 'palo_alto', 'san_jose'
-        ]
-        
-        if np.random.random() < 0.8:  # 80% in business areas
-            base_location = MAJOR_LOCATIONS[np.random.choice(business_areas)]
-        else:
-            base_location = random.choice(list(MAJOR_LOCATIONS.values()))
-        
-        # Add random offset
-        lat_offset = np.random.normal(0, 0.01)
-        lon_offset = np.random.normal(0, 0.01)
-        
-        return (base_location[0] + lat_offset, base_location[1] + lon_offset)
-
     def generate_daily_routes(self, vehicle: Dict, date: datetime) -> List[Dict]:
         """Generate realistic daily routes for a vehicle"""
         driver_profile = DRIVER_PROFILES[vehicle['driver_profile']]
@@ -1494,33 +1427,116 @@ class SyntheticEVGenerator:
             'connector_type': selected_station.get('connector_types', ['Unknown'])[0]
         }
     
-    def _calculate_charging_time(self, energy_needed: float, charging_power: float,
-                               start_soc: float, target_soc: float) -> float:
-        """Calculate realistic charging time with charging curve"""
+    def _find_nearby_charging_stations(self, location: Tuple[float, float], 
+                                 radius_km: int = 10) -> List[Dict]:
+        """Find nearby charging stations using OpenChargeMap API or mock data"""
         
-        if energy_needed <= 0:
-            return 0
+        # Try to use real OpenChargeMap data first
+        if self.ocm_api:
+            try:
+                # Get real stations from OpenChargeMap
+                raw_stations = self.ocm_api.find_nearby_stations(
+                    location[0], location[1], 
+                    distance_km=radius_km,
+                    max_results=15,
+                    country_code='US'
+                )
+                
+                # Convert to our expected format
+                stations = []
+                for raw_station in raw_stations:
+                    station_data = self.ocm_api.extract_station_data(raw_station)
+                    
+                    if station_data and station_data.get('latitude') and station_data.get('longitude'):
+                        # Convert to format expected by our charging logic
+                        converted_station = {
+                            'ocm_id': station_data['ocm_id'],
+                            'latitude': station_data['latitude'],
+                            'longitude': station_data['longitude'],
+                            'operator': station_data['operator'],
+                            'max_power_kw': station_data['max_power_kw'] or 22,  # Default if missing
+                            'cost_usd_per_kwh': self._estimate_cost_from_power(station_data['max_power_kw'] or 22),
+                            'connector_types': station_data['connector_types'] or ['Type 2'],
+                            'availability': 'Available' if station_data['is_operational'] else 'Busy',
+                            'distance_km': geodesic(location, (station_data['latitude'], station_data['longitude'])).kilometers
+                        }
+                        stations.append(converted_station)
+                
+                if stations:
+                    logger.debug(f"Found {len(stations)} real charging stations via OpenChargeMap")
+                    return sorted(stations, key=lambda x: x['distance_km'])
+                    
+            except Exception as e:
+                logger.warning(f"OpenChargeMap API failed: {e}, falling back to mock data")
         
-        # Simplified charging curve - charging slows down as battery fills
-        avg_soc = (start_soc + target_soc) / 2
+        # Fallback to your existing mock station generation
+        return self._generate_mock_charging_stations(location, radius_km)
+
+    def _estimate_cost_from_power(self, power_kw: float) -> float:
+        """Estimate cost per kWh based on charging power"""
+        if power_kw >= 150:  # DC Fast charging
+            return np.random.uniform(0.35, 0.50)
+        elif power_kw >= 50:  # DC Fast charging
+            return np.random.uniform(0.30, 0.45)
+        elif power_kw >= 20:  # AC Level 2
+            return np.random.uniform(0.25, 0.35)
+        else:  # AC Level 1/2
+            return np.random.uniform(0.20, 0.30)
+
+    def _generate_mock_charging_stations(self, location: Tuple[float, float], 
+                                    radius_km: int) -> List[Dict]:
+        """Generate mock charging stations (your existing implementation)"""
+        # Keep your existing mock generation code here
+        num_stations = np.random.poisson(3)  # Average 3 stations nearby
+        stations = []
         
-        if avg_soc < 0.2:
-            power_factor = 1.0  # Full power at low SOC
-        elif avg_soc < 0.5:
-            power_factor = 0.95  # Slight reduction
-        elif avg_soc < 0.8:
-            power_factor = 0.8   # Moderate reduction
-        else:
-            power_factor = 0.5   # Significant reduction at high SOC
+        for i in range(num_stations):
+            # Generate station within radius
+            angle = np.random.uniform(0, 2 * np.pi)
+            distance = np.random.uniform(0.5, radius_km)
+            
+            # Convert to lat/lon offset
+            lat_offset = (distance / 111.0) * np.cos(angle)
+            lon_offset = (distance / 111.0) * np.sin(angle)
+            
+            station_location = (
+                location[0] + lat_offset,
+                location[1] + lon_offset
+            )
+            
+            # Generate realistic station characteristics
+            station_types = ['AC Level 2', 'DC Fast Charger', 'Tesla Supercharger']
+            station_type = np.random.choice(station_types, p=[0.5, 0.4, 0.1])
+            
+            if station_type == 'AC Level 2':
+                max_power = np.random.choice([7.4, 11, 22], p=[0.6, 0.3, 0.1])
+                cost_per_kwh = np.random.uniform(0.25, 0.35)
+            elif station_type == 'DC Fast Charger':
+                max_power = np.random.choice([50, 75, 100, 150], p=[0.3, 0.3, 0.2, 0.2])
+                cost_per_kwh = np.random.uniform(0.35, 0.50)
+            else:  # Tesla Supercharger
+                max_power = np.random.choice([150, 250], p=[0.4, 0.6])
+                cost_per_kwh = np.random.uniform(0.30, 0.45)
+            
+            station = {
+                'ocm_id': f'mock_{i}_{int(location[0]*1000)}_{int(location[1]*1000)}',
+                'latitude': station_location[0],
+                'longitude': station_location[1],
+                'operator': np.random.choice(['ChargePoint', 'EVgo', 'Electrify America', 'Tesla']),
+                'max_power_kw': max_power,
+                'cost_usd_per_kwh': cost_per_kwh,
+                'connector_types': [station_type],
+                'availability': np.random.choice(['Available', 'Busy'], p=[0.7, 0.3]),
+                'distance_km': distance
+            }
+            
+            stations.append(station)
         
-        effective_power = charging_power * power_factor
-        charging_time_hours = energy_needed / effective_power
-        
-        # Add some randomness for real-world variations
-        charging_time_hours *= np.random.normal(1.0, 0.1)  # 10% variation
-        
-        return max(0.25, charging_time_hours)  # Minimum 15 minutes
-    
+        return sorted(stations, key=lambda x: x['distance_km'])
+
+
+
+
     def _find_nearby_charging_stations(self, location: Tuple[float, float], 
                                      radius_km: int = 10) -> List[Dict]:
         """Find nearby charging stations (mock implementation - would use real data)"""
@@ -1574,6 +1590,10 @@ class SyntheticEVGenerator:
         
         return sorted(stations, key=lambda x: x['distance_km'])
     
+
+
+
+
     def _select_charging_station(self, stations: List[Dict], vehicle: Dict, 
                                is_emergency: bool) -> Dict:
         """Select best charging station based on preferences"""
