@@ -111,18 +111,10 @@ class SyntheticEVGenerator:
             logger.info("Attempting to load network with large Bay Area bounding box...")
             
             # Comprehensive Bay Area bounds - covers from Santa Rosa to San Jose
-            bbox_bounds = {
-                'north': 38.6,   # North of Santa Rosa
-                'south': 36.9,   # South of San Jose/Santa Cruz
-                'east': -120.8,  # East of Central Valley edge
-                'west': -123.2   # West to Pacific Ocean
-            }
             
+            bbox_bounds = (38.6,36.9,-120.8,-123.2)
             self.road_network = ox.graph_from_bbox(
-                bbox_bounds['north'],
-                bbox_bounds['south'],
-                bbox_bounds['east'],
-                bbox_bounds['west'],
+                bbox=bbox_bounds,
                 network_type='drive',
                 simplify=True,
                 retain_all=True  # Keep disconnected components
