@@ -103,70 +103,350 @@ class SyntheticEVGenerator:
         return base_config
     
     def load_road_network(self) -> nx.MultiDiGraph:
-        """Load road network for the Bay Area"""
+        """Load road network for the Bay Area with robust fallback strategies"""
         logger.info("Loading Bay Area road network...")
         
+        # Strategy 1: Large bounding box (most reliable for connected network)
         try:
-            # Try to load a larger connected network
-            try:
-                logger.info("Attempting to load network for multiple Bay Area cities...")
-                # Load network for multiple connected cities
-                places = [
+            logger.info("Attempting to load network with large Bay Area bounding box...")
+            
+            # Comprehensive Bay Area bounds - covers from Santa Rosa to San Jose
+            bbox_bounds = {
+                'north': 38.6,   # North of Santa Rosa
+                'south': 36.9,   # South of San Jose/Santa Cruz
+                'east': -120.8,  # East of Central Valley edge
+                'west': -123.2   # West to Pacific Ocean
+            }
+            
+            self.road_network = ox.graph_from_bbox(
+                north=bbox_bounds['north'],
+                south=bbox_bounds['south'],
+                east=bbox_bounds['east'],
+                west=bbox_bounds['west'],
+                network_type='drive',
+                simplify=True,
+                retain_all=True  # Keep disconnected components
+            )
+            
+            # Check if network is large enough and connected
+            if len(self.road_network.nodes) > 5000:  # Reasonable size threshold
+                logger.info(f"Successfully loaded large bounding box network: {len(self.road_network.nodes)} nodes")
+                
+                # Test connectivity by checking if we can find paths between major cities
+                connectivity_score = self._test_network_connectivity()
+                logger.info(f"Network connectivity score: {connectivity_score:.2f}")
+                
+                if connectivity_score > 0.5:  # At least 50% of test routes work
+                    self._add_network_attributes()
+                    return self.road_network
+                else:
+                    logger.warning("Network has poor connectivity, trying alternative approach...")
+                    raise Exception("Poor network connectivity")
+            else:
+                logger.warning("Bounding box network too small, trying alternative...")
+                raise Exception("Network too small")
+                
+        except Exception as e1:
+            logger.warning(f"Large bounding box approach failed: {e1}")
+        
+        # Strategy 2: Multiple connected places
+        try:
+            logger.info("Attempting to load network for multiple connected Bay Area places...")
+            
+            # Try different combinations of places
+            place_combinations = [
+                # Full Bay Area (if OSM recognizes it)
+                ["San Francisco Bay Area, California, USA"],
+                
+                # Major connected cities
+                [
                     "San Francisco, California, USA",
                     "Oakland, California, USA", 
                     "San Jose, California, USA",
                     "Fremont, California, USA"
+                ],
+                
+                # Core Bay Area counties
+                [
+                    "San Francisco County, California, USA",
+                    "Alameda County, California, USA",
+                    "Santa Clara County, California, USA"
                 ]
-                
-                # Try to get a combined network
-                self.road_network = ox.graph_from_place(
-                    places,
-                    network_type='drive',
-                    simplify=True
-                )
-                logger.info("Successfully loaded multi-city network")
-                
-            except Exception as e1:
-                logger.warning(f"Multi-city approach failed: {e1}")
-                
-                # Fallback: Use a large bounding box that covers the whole Bay Area
-                try:
-                    logger.info("Attempting to load network with large bounding box...")
-                    
-                    # Large bounding box covering entire Bay Area
-                    self.road_network = ox.graph_from_bbox(
-                        bbox=(38.5, 36.8, -120.5, -123.5),  # (north, south, east, west)
-                        network_type='drive',
-                        simplify=True
-                    )
-                    logger.info("Successfully loaded network with large bounding box")
-                    
-                except Exception as e2:
-                    logger.warning(f"Large bounding box approach failed: {e2}")
-                    
-                    # Final fallback: Just use mock network
-                    logger.info("Using mock network as final fallback")
-                    self.road_network = self._create_mock_network()
-                    return self.road_network
+            ]
             
-            # Add edge speeds and travel times if we have a real network
-            if self.road_network is not None and len(self.road_network.nodes) > 1000:
+            for places in place_combinations:
                 try:
-                    self.road_network = ox.add_edge_speeds(self.road_network)
-                    self.road_network = ox.add_edge_travel_times(self.road_network)
-                except Exception as e:
-                    logger.warning(f"Failed to add speeds/times: {e}")
-                
-                logger.info(f"Loaded road network with {len(self.road_network.nodes)} nodes and {len(self.road_network.edges)} edges")
+                    logger.info(f"Trying places: {places}")
+                    
+                    if len(places) == 1:
+                        self.road_network = ox.graph_from_place(
+                            places[0],
+                            network_type='drive',
+                            simplify=True
+                        )
+                    else:
+                        self.road_network = ox.graph_from_place(
+                            places,
+                            network_type='drive',
+                            simplify=True
+                        )
+                    
+                    if len(self.road_network.nodes) > 3000:
+                        connectivity_score = self._test_network_connectivity()
+                        logger.info(f"Places network connectivity: {connectivity_score:.2f}")
+                        
+                        if connectivity_score > 0.3:  # Lower threshold for place-based networks
+                            self._add_network_attributes()
+                            logger.info(f"Successfully loaded places network: {len(self.road_network.nodes)} nodes")
+                            return self.road_network
+                    
+                except Exception as place_error:
+                    logger.warning(f"Failed to load places {places}: {place_error}")
+                    continue
+            
+            raise Exception("All place combinations failed")
+            
+        except Exception as e2:
+            logger.warning(f"Multiple places approach failed: {e2}")
+        
+        # Strategy 3: Single large city as base
+        try:
+            logger.info("Attempting to load single city network (San Francisco)...")
+            
+            self.road_network = ox.graph_from_place(
+                "San Francisco, California, USA",
+                network_type='drive',
+                simplify=True
+            )
+            
+            if len(self.road_network.nodes) > 1000:
+                logger.info(f"Loaded San Francisco network: {len(self.road_network.nodes)} nodes")
+                logger.warning("Using limited SF network - some long-distance routes may fail")
+                self._add_network_attributes()
                 return self.road_network
-            else:
-                raise Exception("Network too small or invalid")
-                
+            
+        except Exception as e3:
+            logger.warning(f"Single city approach failed: {e3}")
+        
+        # Strategy 4: Enhanced mock network
+        logger.info("All OSM approaches failed, creating enhanced mock network...")
+        self.road_network = self._create_enhanced_mock_network()
+        return self.road_network
+
+    def _test_network_connectivity(self) -> float:
+        """Test network connectivity by trying routes between major Bay Area locations"""
+        if self.road_network is None:
+            return 0.0
+        
+        # Test routes between major locations
+        test_locations = [
+            (37.7749, -122.4194),  # San Francisco
+            (37.8044, -122.2712),  # Oakland
+            (37.3382, -122.0922),  # San Jose
+            (37.5485, -122.9886),  # Fremont
+            (37.4419, -122.1430),  # Palo Alto
+        ]
+        
+        successful_routes = 0
+        total_tests = 0
+        
+        # Test connectivity between all pairs
+        for i, origin in enumerate(test_locations):
+            for j, dest in enumerate(test_locations):
+                if i != j:
+                    total_tests += 1
+                    try:
+                        origin_node = self._find_nearest_node(origin[0], origin[1])
+                        dest_node = self._find_nearest_node(dest[0], dest[1])
+                        
+                        if origin_node and dest_node:
+                            # Try to find path
+                            try:
+                                nx.shortest_path(self.road_network, origin_node, dest_node)
+                                successful_routes += 1
+                            except nx.NetworkXNoPath:
+                                pass
+                    except:
+                        pass
+        
+        connectivity_score = successful_routes / total_tests if total_tests > 0 else 0
+        logger.info(f"Connectivity test: {successful_routes}/{total_tests} routes successful")
+        return connectivity_score
+
+    def _add_network_attributes(self):
+        """Add speed and travel time attributes to network edges"""
+        try:
+            logger.info("Adding edge speeds and travel times...")
+            self.road_network = ox.add_edge_speeds(self.road_network)
+            self.road_network = ox.add_edge_travel_times(self.road_network)
+            logger.info("Successfully added network attributes")
         except Exception as e:
-            logger.error(f"Failed to load road network: {e}")
-            logger.info("Creating mock network for testing...")
-            self.road_network = self._create_mock_network()
-            return self.road_network
+            logger.warning(f"Failed to add network attributes: {e}")
+            # Add basic attributes manually
+            self._add_basic_network_attributes()
+
+    def _add_basic_network_attributes(self):
+        """Add basic speed and travel time attributes manually"""
+        logger.info("Adding basic network attributes manually...")
+        
+        for u, v, key, data in self.road_network.edges(keys=True, data=True):
+            # Get edge length
+            length = data.get('length', 100)  # Default 100m if missing
+            
+            # Estimate speed based on road type
+            highway_type = data.get('highway', 'residential')
+            
+            if isinstance(highway_type, list):
+                highway_type = highway_type[0]
+            
+            # Speed mapping (km/h)
+            speed_map = {
+                'motorway': 100,
+                'trunk': 80,
+                'primary': 60,
+                'secondary': 50,
+                'tertiary': 40,
+                'residential': 30,
+                'service': 20,
+                'unclassified': 40
+            }
+            
+            speed_kmh = speed_map.get(highway_type, 40)  # Default 40 km/h
+            
+            # Add attributes
+            self.road_network.edges[u, v, key]['speed_kph'] = speed_kmh
+            self.road_network.edges[u, v, key]['travel_time'] = length / (speed_kmh * 1000 / 3600)
+
+    def _create_enhanced_mock_network(self) -> nx.MultiDiGraph:
+        """Create an enhanced mock network with better connectivity"""
+        logger.info("Creating enhanced mock network with realistic Bay Area structure...")
+        
+        # Create a more realistic network based on actual Bay Area geography
+        G = nx.MultiDiGraph()
+        
+        # Define major hubs and their connections (simplified Bay Area structure)
+        major_hubs = {
+            'sf_downtown': (37.7749, -122.4194),
+            'sf_sunset': (37.7449, -122.4794),
+            'oakland_downtown': (37.8044, -122.2712),
+            'berkeley': (37.8715, -122.2730),
+            'fremont': (37.5485, -122.9886),
+            'san_jose_downtown': (37.3382, -122.0922),
+            'palo_alto': (37.4419, -122.1430),
+            'mountain_view': (37.3861, -122.0839),
+            'hayward': (37.6688, -122.0808),
+            'daly_city': (37.6879, -122.4702)
+        }
+        
+        # Add hub nodes
+        node_id = 0
+        hub_nodes = {}
+        
+        for hub_name, (lat, lon) in major_hubs.items():
+            G.add_node(node_id, y=lat, x=lon, hub=hub_name)
+            hub_nodes[hub_name] = node_id
+            node_id += 1
+        
+        # Define major connections (highways/bridges)
+        major_connections = [
+            ('sf_downtown', 'oakland_downtown', 80, 8.5),  # Bay Bridge
+            ('sf_downtown', 'sf_sunset', 50, 5.2),
+            ('oakland_downtown', 'berkeley', 60, 6.8),
+            ('oakland_downtown', 'hayward', 70, 12.3),
+            ('hayward', 'fremont', 65, 8.9),
+            ('fremont', 'san_jose_downtown', 75, 25.4),
+            ('san_jose_downtown', 'palo_alto', 60, 15.2),
+            ('palo_alto', 'mountain_view', 55, 8.1),
+            ('sf_downtown', 'daly_city', 45, 12.7),
+            ('daly_city', 'san_jose_downtown', 70, 45.2),  # 101 highway
+            ('berkeley', 'san_jose_downtown', 75, 52.1),   # 880 highway
+        ]
+        
+        # Add major highway connections
+        for hub1, hub2, speed_kmh, distance_km in major_connections:
+            node1 = hub_nodes[hub1]
+            node2 = hub_nodes[hub2]
+            
+            distance_m = distance_km * 1000
+            travel_time = distance_m / (speed_kmh * 1000 / 3600)
+            
+            # Add bidirectional edges
+            G.add_edge(node1, node2, 0, 
+                    length=distance_m, 
+                    speed_kph=speed_kmh, 
+                    travel_time=travel_time,
+                    highway='primary')
+            G.add_edge(node2, node1, 0, 
+                    length=distance_m, 
+                    speed_kph=speed_kmh, 
+                    travel_time=travel_time,
+                    highway='primary')
+        
+        # Add local grid around each hub
+        for hub_name, (hub_lat, hub_lon) in major_hubs.items():
+            hub_node = hub_nodes[hub_name]
+            
+            # Create local grid (5x5) around each hub
+            grid_size = 5
+            grid_spacing = 0.01  # ~1km spacing
+            
+            local_nodes = []
+            
+            for i in range(grid_size):
+                for j in range(grid_size):
+                    if i == 2 and j == 2:  # Skip center (that's the hub)
+                        local_nodes.append(hub_node)
+                        continue
+                    
+                    lat = hub_lat + (i - 2) * grid_spacing
+                    lon = hub_lon + (j - 2) * grid_spacing
+                    
+                    G.add_node(node_id, y=lat, x=lon, hub_area=hub_name)
+                    local_nodes.append(node_id)
+                    node_id += 1
+            
+            # Connect local grid
+            for i in range(grid_size):
+                for j in range(grid_size):
+                    current_idx = i * grid_size + j
+                    current_node = local_nodes[current_idx]
+                    
+                    # Connect to right neighbor
+                    if j < grid_size - 1:
+                        right_node = local_nodes[current_idx + 1]
+                        self._add_local_edge(G, current_node, right_node)
+                    
+                    # Connect to bottom neighbor
+                    if i < grid_size - 1:
+                        bottom_node = local_nodes[current_idx + grid_size]
+                        self._add_local_edge(G, current_node, bottom_node)
+        
+        logger.info(f"Created enhanced mock network with {len(G.nodes)} nodes and {len(G.edges)} edges")
+        return G
+
+    def _add_local_edge(self, G, node1, node2):
+        """Add local street edge between two nodes"""
+        node1_data = G.nodes[node1]
+        node2_data = G.nodes[node2]
+        
+        coord1 = (node1_data['y'], node1_data['x'])
+        coord2 = (node2_data['y'], node2_data['x'])
+        
+        distance = geodesic(coord1, coord2).meters
+        speed_kmh = 40  # Local street speed
+        travel_time = distance / (speed_kmh * 1000 / 3600)
+        
+        # Add bidirectional edges
+        G.add_edge(node1, node2, 0, 
+                length=distance, 
+                speed_kph=speed_kmh, 
+                travel_time=travel_time,
+                highway='residential')
+        G.add_edge(node2, node1, 0, 
+                length=distance, 
+                speed_kph=speed_kmh, 
+                travel_time=travel_time,
+                highway='residential')
 
 
 
