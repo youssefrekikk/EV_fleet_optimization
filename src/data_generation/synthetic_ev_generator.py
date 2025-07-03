@@ -1782,7 +1782,7 @@ class SyntheticEVGenerator:
         print("\n" + "="*50)
     
     def save_datasets(self, datasets: Dict[str, pd.DataFrame], 
-                     output_dir: str = None) -> Dict[str, str]:
+                 output_dir: str = None) -> Dict[str, str]:
         """Save datasets to files"""
         
         if output_dir is None:
@@ -1795,16 +1795,19 @@ class SyntheticEVGenerator:
         use_compression = self.config['data_gen']['compression']
         
         for name, df in datasets.items():
+            # Clean DataFrame before saving
+            df_clean = self._clean_dataframe_for_export(df)
+            
             for file_format in file_formats:
                 if file_format == 'csv':
                     filename = f"{name}.csv"
                     filepath = os.path.join(output_dir, filename)
-                    df.to_csv(filepath, index=False, compression='gzip' if use_compression else None)
+                    df_clean.to_csv(filepath, index=False, compression='gzip' if use_compression else None)
                 
                 elif file_format == 'parquet':
                     filename = f"{name}.parquet"
                     filepath = os.path.join(output_dir, filename)
-                    df.to_parquet(filepath, compression='snappy' if use_compression else None)
+                    df_clean.to_parquet(filepath, compression='snappy' if use_compression else None)
                 
                 saved_files[f"{name}_{file_format}"] = filepath
                 logger.info(f"Saved {name} dataset to {filepath}")
@@ -1830,6 +1833,37 @@ class SyntheticEVGenerator:
         saved_files['metadata'] = metadata_file
         
         return saved_files
+
+    def _clean_dataframe_for_export(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Clean DataFrame to avoid export issues"""
+        df_clean = df.copy()
+        
+        # Convert all object columns that might have mixed types to string
+        for col in df_clean.columns:
+            if df_clean[col].dtype == 'object':
+                # Check if column has mixed types or contains lists/dicts
+                sample_values = df_clean[col].dropna().head(10)
+                
+                if len(sample_values) > 0:
+                    # Check for mixed types or complex objects
+                    first_type = type(sample_values.iloc[0])
+                    has_mixed_types = any(type(val) != first_type for val in sample_values)
+                    has_complex_objects = any(isinstance(val, (list, dict)) for val in sample_values)
+                    
+                    if has_mixed_types or has_complex_objects:
+                        # Convert to string representation
+                        df_clean[col] = df_clean[col].astype(str)
+                        logger.debug(f"Converted column '{col}' to string due to mixed/complex types")
+        
+        # Specifically handle known problematic columns
+        problematic_columns = ['station_id', 'connector_types', 'gps_trace']
+        
+        for col in problematic_columns:
+            if col in df_clean.columns:
+                df_clean[col] = df_clean[col].astype(str)
+        
+        return df_clean
+
 
 # Usage example and testing functions
 def main():
