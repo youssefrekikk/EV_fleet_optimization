@@ -48,6 +48,10 @@ CHARGING_CONFIG = {
     'peak_hours': [(17, 21)],  # 5 PM - 9 PM
     'peak_pricing_multiplier': 1.5,
     'base_electricity_cost': 0.15,  # USD per kWh
+    'use_real_charging_data': True,
+    
+    'charging_station_search_radius': 10,  # km
+    'max_charging_stations_per_search': 15
 }
 
 # Weather Configuration
