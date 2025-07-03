@@ -768,6 +768,18 @@ class SyntheticEVGenerator:
         
         return gps_trace
 
+    def _calculate_bearing(self, origin: Tuple[float, float], destination: Tuple[float, float]) -> float:
+        """Calculate bearing between two points"""
+        lat1, lon1 = np.radians(origin)
+        lat2, lon2 = np.radians(destination)
+        
+        dlon = lon2 - lon1
+        
+        y = np.sin(dlon) * np.cos(lat2)
+        x = np.cos(lat1) * np.sin(lat2) - np.sin(lat1) * np.cos(lat2) * np.cos(dlon)
+        
+        bearing = np.degrees(np.arctan2(y, x))
+        return (bearing + 360) % 360
 
     def _calculate_heading(self, index: int, route_coords: List[Tuple[float, float]]) -> float:
         """Calculate heading/bearing between GPS points"""
