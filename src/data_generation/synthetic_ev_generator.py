@@ -84,8 +84,8 @@ class SyntheticEVGenerator:
         self.ocm_api = None
         self._init_charging_api()
         # Initialize random seed for reproducibility and testing remove when generating final data
-        np.random.seed(42)
-        random.seed(42)
+        #np.random.seed(42)
+        #random.seed(42)
         
         logger.info("Synthetic EV Generator initialized")
     
@@ -512,170 +512,170 @@ class SyntheticEVGenerator:
             logger.info(f"Created comprehensive mock network with {len(G.nodes)} nodes and {len(G.edges)} edges")
             return G
 
-        def _add_local_edge(self, G, node1, node2, speed_kmh=40):
-            """Add local street edge between two nodes with configurable speed"""
-            node1_data = G.nodes[node1]
-            node2_data = G.nodes[node2]
-            
-            coord1 = (node1_data['y'], node1_data['x'])
-            coord2 = (node2_data['y'], node2_data['x'])
-            
-            distance = geodesic(coord1, coord2).meters
-            travel_time = distance / (speed_kmh * 1000 / 3600)
-            
-            # Add bidirectional edges
-            G.add_edge(node1, node2, 0, 
-                    length=distance, 
-                    speed_kph=speed_kmh, 
-                    travel_time=travel_time,
-                    highway='residential')
-            G.add_edge(node2, node1, 0, 
-                    length=distance, 
-                    speed_kph=speed_kmh, 
-                    travel_time=travel_time,
-                    highway='residential')
+    def _add_local_edge(self, G, node1, node2, speed_kmh=40):
+        """Add local street edge between two nodes with configurable speed"""
+        node1_data = G.nodes[node1]
+        node2_data = G.nodes[node2]
+        
+        coord1 = (node1_data['y'], node1_data['x'])
+        coord2 = (node2_data['y'], node2_data['x'])
+        
+        distance = geodesic(coord1, coord2).meters
+        travel_time = distance / (speed_kmh * 1000 / 3600)
+        
+        # Add bidirectional edges
+        G.add_edge(node1, node2, 0, 
+                length=distance, 
+                speed_kph=speed_kmh, 
+                travel_time=travel_time,
+                highway='residential')
+        G.add_edge(node2, node1, 0, 
+                length=distance, 
+                speed_kph=speed_kmh, 
+                travel_time=travel_time,
+                highway='residential')
 
-        def _enhance_network_connectivity(self, network: nx.MultiDiGraph) -> nx.MultiDiGraph:
-            """Enhanced connectivity improvement with Bay Area specific bridges"""
+    def _enhance_network_connectivity(self, network: nx.MultiDiGraph) -> nx.MultiDiGraph:
+        """Enhanced connectivity improvement with Bay Area specific bridges"""
+        
+        # Find disconnected components
+        undirected = network.to_undirected()
+        components = list(nx.connected_components(undirected))
+        
+        if len(components) > 1:
+            logger.info(f"🔗 Found {len(components)} disconnected components, adding bridges...")
             
-            # Find disconnected components
-            undirected = network.to_undirected()
-            components = list(nx.connected_components(undirected))
+            # Connect largest component to others
+            largest_component = max(components, key=len)
+            bridges_added = 0
             
-            if len(components) > 1:
-                logger.info(f"🔗 Found {len(components)} disconnected components, adding bridges...")
-                
-                # Connect largest component to others
-                largest_component = max(components, key=len)
-                bridges_added = 0
-                
-                for component in components:
-                    if component != largest_component and len(component) > 5:  # Only connect significant components
-                        # Find closest nodes between components
-                        min_distance = float('inf')
-                        best_connection = None
-                        
-                        # Sample nodes for performance
-                        sample_size = min(20, len(component), len(largest_component))
-                        component_sample = list(component)[:sample_size]
-                        largest_sample = list(largest_component)[:sample_size]
-                        
-                        for node1 in largest_sample:
-                            for node2 in component_sample:
-                                try:
-                                    coord1 = (network.nodes[node1]['y'], network.nodes[node1]['x'])
-                                    coord2 = (network.nodes[node2]['y'], network.nodes[node2]['x'])
-                                    distance = geodesic(coord1, coord2).meters
-                                    
-                                    if distance < min_distance:
-                                        min_distance = distance
-                                        best_connection = (node1, node2)
-                                except:
-                                    continue
-                        
-                        # Add synthetic bridge if reasonable distance
-                        if best_connection and min_distance < 30000:  # Max 30km bridge
-                            node1, node2 = best_connection
-                            
-                            # Determine bridge type and speed based on distance
-                            if min_distance < 5000:  # Local connection
-                                speed_kmh = 50
-                                highway_type = 'synthetic_local'
-                            elif min_distance < 15000:  # Regional connection
-                                speed_kmh = 65
-                                highway_type = 'synthetic_regional'
-                            else:  # Long-distance bridge
-                                speed_kmh = 80
-                                highway_type = 'synthetic_bridge'
-                            
-                            travel_time = min_distance / (speed_kmh * 1000 / 3600)
-                            
-                            # Add bidirectional edges
-                            network.add_edge(node1, node2, 0,
-                                        length=min_distance,
-                                        speed_kph=speed_kmh,
-                                        travel_time=travel_time,
-                                        highway=highway_type)
-                            network.add_edge(node2, node1, 0,
-                                        length=min_distance,
-                                        speed_kph=speed_kmh,
-                                        travel_time=travel_time,
-                                        highway=highway_type)
-                            
-                            bridges_added += 1
-                            logger.info(f"🌉 Added {highway_type}: {min_distance/1000:.1f}km")
-                
-                logger.info(f"✅ Added {bridges_added} synthetic connections")
-            else:
-                logger.info("✅ Network is already fully connected")
-            
-            # Add strategic Bay Area connections if this is a mock network
-            if not hasattr(network, 'graph') or 'crs' not in network.graph:
-                network = self._add_strategic_bay_area_connections(network)
-            
-            return network
-
-        def _add_strategic_bay_area_connections(self, network: nx.MultiDiGraph) -> nx.MultiDiGraph:
-            """Add strategic connections for key Bay Area routes"""
-            
-            logger.info("🌉 Adding strategic Bay Area connections...")
-            
-            # Key Bay Area connection points that should always be connected
-            strategic_connections = [
-                # Major bridge/tunnel equivalents
-                ((37.7749, -122.4194), (37.8044, -122.2712), 70, "Bay Bridge equivalent"),
-                ((37.7749, -122.4194), (37.9735, -122.5311), 65, "Golden Gate Bridge equivalent"),
-                ((37.6688, -122.0808), (37.5630, -122.3255), 65, "San Mateo Bridge equivalent"),
-                
-                # Major highway connections
-                ((37.3382, -122.0922), (37.5485, -122.9886), 75, "US-880 connection"),
-                ((37.7749, -122.4194), (37.3382, -122.0922), 70, "US-101 connection"),
-                ((37.8044, -122.2712), (37.3382, -122.0922), 75, "I-880 full connection"),
-            ]
-            
-            connections_added = 0
-            
-            for (lat1, lon1), (lat2, lon2), speed_kmh, description in strategic_connections:
-                try:
-                    # Find nearest nodes to these strategic points
-                    node1 = self._find_nearest_node(lat1, lon1)
-                    node2 = self._find_nearest_node(lat2, lon2)
+            for component in components:
+                if component != largest_component and len(component) > 5:  # Only connect significant components
+                    # Find closest nodes between components
+                    min_distance = float('inf')
+                    best_connection = None
                     
-                    if node1 and node2 and node1 != node2:
-                        # Check if already connected
-                        try:
-                            nx.shortest_path(network, node1, node2)
-                            logger.debug(f"✅ {description} already connected")
-                            continue
-                        except nx.NetworkXNoPath:
-                            # Add connection
-                            coord1 = (network.nodes[node1]['y'], network.nodes[node1]['x'])
-                            coord2 = (network.nodes[node2]['y'], network.nodes[node2]['x'])
-                            distance = geodesic(coord1, coord2).meters
-                            travel_time = distance / (speed_kmh * 1000 / 3600)
-                            
-                            network.add_edge(node1, node2, 0,
-                                        length=distance,
-                                        speed_kph=speed_kmh,
-                                        travel_time=travel_time,
-                                        highway='strategic_connection',
-                                        description=description)
-                            network.add_edge(node2, node1, 0,
-                                        length=distance,
-                                        speed_kph=speed_kmh,
-                                        travel_time=travel_time,
-                                        highway='strategic_connection',
-                                        description=description)
-                            
-                            connections_added += 1
-                            logger.info(f"🔗 Added {description}: {distance/1000:.1f}km")
-                
-                except Exception as e:
-                    logger.debug(f"Could not add {description}: {e}")
-                    continue
+                    # Sample nodes for performance
+                    sample_size = min(20, len(component), len(largest_component))
+                    component_sample = list(component)[:sample_size]
+                    largest_sample = list(largest_component)[:sample_size]
+                    
+                    for node1 in largest_sample:
+                        for node2 in component_sample:
+                            try:
+                                coord1 = (network.nodes[node1]['y'], network.nodes[node1]['x'])
+                                coord2 = (network.nodes[node2]['y'], network.nodes[node2]['x'])
+                                distance = geodesic(coord1, coord2).meters
+                                
+                                if distance < min_distance:
+                                    min_distance = distance
+                                    best_connection = (node1, node2)
+                            except:
+                                continue
+                    
+                    # Add synthetic bridge if reasonable distance
+                    if best_connection and min_distance < 30000:  # Max 30km bridge
+                        node1, node2 = best_connection
+                        
+                        # Determine bridge type and speed based on distance
+                        if min_distance < 5000:  # Local connection
+                            speed_kmh = 50
+                            highway_type = 'synthetic_local'
+                        elif min_distance < 15000:  # Regional connection
+                            speed_kmh = 65
+                            highway_type = 'synthetic_regional'
+                        else:  # Long-distance bridge
+                            speed_kmh = 80
+                            highway_type = 'synthetic_bridge'
+                        
+                        travel_time = min_distance / (speed_kmh * 1000 / 3600)
+                        
+                        # Add bidirectional edges
+                        network.add_edge(node1, node2, 0,
+                                    length=min_distance,
+                                    speed_kph=speed_kmh,
+                                    travel_time=travel_time,
+                                    highway=highway_type)
+                        network.add_edge(node2, node1, 0,
+                                    length=min_distance,
+                                    speed_kph=speed_kmh,
+                                    travel_time=travel_time,
+                                    highway=highway_type)
+                        
+                        bridges_added += 1
+                        logger.info(f"🌉 Added {highway_type}: {min_distance/1000:.1f}km")
             
-            logger.info(f"✅ Added {connections_added} strategic Bay Area connections")
-            return network
+            logger.info(f"✅ Added {bridges_added} synthetic connections")
+        else:
+            logger.info("✅ Network is already fully connected")
+        
+        # Add strategic Bay Area connections if this is a mock network
+        if not hasattr(network, 'graph') or 'crs' not in network.graph:
+            network = self._add_strategic_bay_area_connections(network)
+        
+        return network
+
+    def _add_strategic_bay_area_connections(self, network: nx.MultiDiGraph) -> nx.MultiDiGraph:
+        """Add strategic connections for key Bay Area routes"""
+        
+        logger.info("🌉 Adding strategic Bay Area connections...")
+        
+        # Key Bay Area connection points that should always be connected
+        strategic_connections = [
+            # Major bridge/tunnel equivalents
+            ((37.7749, -122.4194), (37.8044, -122.2712), 70, "Bay Bridge equivalent"),
+            ((37.7749, -122.4194), (37.9735, -122.5311), 65, "Golden Gate Bridge equivalent"),
+            ((37.6688, -122.0808), (37.5630, -122.3255), 65, "San Mateo Bridge equivalent"),
+            
+            # Major highway connections
+            ((37.3382, -122.0922), (37.5485, -122.9886), 75, "US-880 connection"),
+            ((37.7749, -122.4194), (37.3382, -122.0922), 70, "US-101 connection"),
+            ((37.8044, -122.2712), (37.3382, -122.0922), 75, "I-880 full connection"),
+        ]
+        
+        connections_added = 0
+        
+        for (lat1, lon1), (lat2, lon2), speed_kmh, description in strategic_connections:
+            try:
+                # Find nearest nodes to these strategic points
+                node1 = self._find_nearest_node(lat1, lon1)
+                node2 = self._find_nearest_node(lat2, lon2)
+                
+                if node1 and node2 and node1 != node2:
+                    # Check if already connected
+                    try:
+                        nx.shortest_path(network, node1, node2)
+                        logger.debug(f"✅ {description} already connected")
+                        continue
+                    except nx.NetworkXNoPath:
+                        # Add connection
+                        coord1 = (network.nodes[node1]['y'], network.nodes[node1]['x'])
+                        coord2 = (network.nodes[node2]['y'], network.nodes[node2]['x'])
+                        distance = geodesic(coord1, coord2).meters
+                        travel_time = distance / (speed_kmh * 1000 / 3600)
+                        
+                        network.add_edge(node1, node2, 0,
+                                    length=distance,
+                                    speed_kph=speed_kmh,
+                                    travel_time=travel_time,
+                                    highway='strategic_connection',
+                                    description=description)
+                        network.add_edge(node2, node1, 0,
+                                    length=distance,
+                                    speed_kph=speed_kmh,
+                                    travel_time=travel_time,
+                                    highway='strategic_connection',
+                                    description=description)
+                        
+                        connections_added += 1
+                        logger.info(f"🔗 Added {description}: {distance/1000:.1f}km")
+            
+            except Exception as e:
+                logger.debug(f"Could not add {description}: {e}")
+                continue
+        
+        logger.info(f"✅ Added {connections_added} strategic Bay Area connections")
+        return network
 
 
 
@@ -1297,31 +1297,6 @@ class SyntheticEVGenerator:
         
         logger.info(f"Created enhanced mock network with {len(G.nodes)} nodes and {len(G.edges)} edges")
         return G
-
-    def _add_local_edge(self, G, node1, node2):
-        """Add local street edge between two nodes"""
-        node1_data = G.nodes[node1]
-        node2_data = G.nodes[node2]
-        
-        coord1 = (node1_data['y'], node1_data['x'])
-        coord2 = (node2_data['y'], node2_data['x'])
-        
-        distance = geodesic(coord1, coord2).meters
-        speed_kmh = 40  # Local street speed
-        travel_time = distance / (speed_kmh * 1000 / 3600)
-        
-        # Add bidirectional edges
-        G.add_edge(node1, node2, 0, 
-                length=distance, 
-                speed_kph=speed_kmh, 
-                travel_time=travel_time,
-                highway='residential')
-        G.add_edge(node2, node1, 0, 
-                length=distance, 
-                speed_kph=speed_kmh, 
-                travel_time=travel_time,
-                highway='residential')
-
 
 
 
@@ -2732,8 +2707,8 @@ def main():
     
     # Configuration override for testing
     config_override = {
-        'fleet': {'fleet_size': 10},  # Smaller fleet for testing
-        'simulation': {'simulation_days': 7}  # One week of data
+        'fleet': {'fleet_size': 50},  # Smaller fleet for testing
+        'simulation': {'simulation_days': 30}  # One week of data
     }
     
     # Initialize generator
