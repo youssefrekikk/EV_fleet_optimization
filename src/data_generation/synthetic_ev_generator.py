@@ -166,38 +166,72 @@ class SyntheticEVGenerator:
         return self.road_network
 
     def _create_and_save_network(self) -> nx.MultiDiGraph:
-        """Create new network and save to database"""
+        """Create new network and save to database with better error handling"""
         
-        # Try OSM approaches first
-        network = self._try_osm_approaches()
+        # Try OSM approaches first with better error handling
+        network = None
         
+        # Strategy 1: Conservative bounding box
+        try:
+            logger.info("🌐 Trying conservative bounding box...")
+            # Smaller, more focused Bay Area box
+            bbox_bounds = (37.9, 37.3, -122.0, -122.6)  # [north, south, east, west]
+            network = ox.graph_from_bbox(
+                bbox=bbox_bounds,
+                network_type='drive',
+                simplify=True,
+                retain_all=False  # Don't retain isolated components
+            )
+            
+            if network and len(network.nodes) > 500:
+                logger.info(f"✅ Conservative bbox successful: {len(network.nodes)} nodes")
+                network = self._add_network_attributes(network)
+            else:
+                network = None
+                
+        except Exception as e:
+            logger.warning(f"❌ Conservative bbox failed: {e}")
+            network = None
+        
+        # Strategy 2: Try OSM place-based approaches
         if network is None:
-            logger.info("🎭 OSM approaches failed, creating enhanced mock network...")
+            network = self._try_osm_approaches()
+        
+        # Strategy 3: Enhanced mock network as fallback
+        if network is None:
+            logger.info("🎭 All OSM approaches failed, creating enhanced mock network...")
             network = self._create_enhanced_mock_network()
         
         # Enhance network connectivity
-        network = self._enhance_network_connectivity(network)
-        
-        # Save to database
-        metadata = {
-            'source': 'osm' if hasattr(network, 'graph') and 'crs' in network.graph else 'mock',
-            'bay_area_bounds': self.config['geography'],
-            'connectivity_enhanced': True,
-            'creation_method': 'osm_with_fallback'
-        }
-        
-        logger.info("💾 Saving network to database...")
-        self.network_db.save_network(network, metadata)
-        
-        return network
+        if network:
+            network = self._enhance_network_connectivity(network)
+            
+            # Save to database
+            metadata = {
+                'source': 'osm' if hasattr(network, 'graph') and 'crs' in network.graph else 'mock',
+                'bay_area_bounds': self.config['geography'],
+                'connectivity_enhanced': True,
+                'creation_method': 'improved_osm_with_fallback',
+                'nodes_count': len(network.nodes),
+                'edges_count': len(network.edges)
+            }
+            
+            logger.info("💾 Saving network to database...")
+            self.network_db.save_network(network, metadata)
+            
+            return network
+        else:
+            raise Exception("Failed to create any network - all strategies failed")
+
 
     def _try_osm_approaches(self) -> Optional[nx.MultiDiGraph]:
-        """Try different OSM loading strategies"""
+        """Try different OSM loading strategies with better place names"""
         
-        # Strategy 1: Large bounding box
+        # Strategy 1: Large bounding box (more reliable)
         try:
             logger.info("🌐 Trying large bounding box approach...")
-            bbox_bounds = (38.6, 36.9, -120.8, -123.2)
+            # Bay Area bounding box: [north, south, east, west]
+            bbox_bounds = (38.0, 37.0, -121.5, -123.0)  # Adjusted bounds
             network = ox.graph_from_bbox(
                 bbox=bbox_bounds,
                 network_type='drive',
@@ -205,9 +239,8 @@ class SyntheticEVGenerator:
                 retain_all=True
             )
             
-            if len(network.nodes) > 1000:
+            if len(network.nodes) > 800:
                 logger.info(f"✅ Large bounding box successful: {len(network.nodes)} nodes")
-                
                 network = self._add_network_attributes(network)
                 return network
             else:
@@ -216,21 +249,29 @@ class SyntheticEVGenerator:
         except Exception as e:
             logger.warning(f"❌ Bounding box approach failed: {e}")
         
-        # Strategy 2: Multiple connected places
+        # Strategy 2: Multiple connected places with better place names
         try:
             logger.info("🏙️ Trying multiple places approach...")
             place_combinations = [
-                ["San Francisco Bay Area, California, USA"],
+                # Try individual counties first (more reliable)
+                [
+                    "San Francisco County, California, USA",
+                    "Alameda County, California, USA", 
+                    "San Mateo County, California, USA"
+                ],
+                # Try major cities
                 [
                     "San Francisco, California, USA",
                     "Oakland, California, USA", 
-                    "San Jose, California, USA",
-                    "Fremont, California, USA"
+                    "San Jose, California, USA"
                 ],
+                # Try metro area names
                 [
-                    "San Francisco County, California, USA",
-                    "Alameda County, California, USA",
-                    "Santa Clara County, California, USA"
+                    "San Francisco-Oakland-Berkeley, CA, USA"
+                ],
+                # Single large county
+                [
+                    "Alameda County, California, USA"
                 ]
             ]
             
@@ -238,6 +279,16 @@ class SyntheticEVGenerator:
                 try:
                     logger.info(f"🔍 Trying places: {places}")
                     
+                    # Test geocoding first
+                    for place in places:
+                        try:
+                            gdf = ox.geocode_to_gdf(place)
+                            logger.info(f"  ✅ Geocoded {place}: {gdf.geometry.iloc[0].geom_type}")
+                        except Exception as geo_error:
+                            logger.warning(f"  ❌ Failed to geocode {place}: {geo_error}")
+                            raise geo_error  # Skip this combination
+                    
+                    # If geocoding works, try to get the network
                     if len(places) == 1:
                         network = ox.graph_from_place(
                             places[0],
@@ -251,7 +302,7 @@ class SyntheticEVGenerator:
                             simplify=True
                         )
                     
-                    if len(network.nodes) > 3000:
+                    if len(network.nodes) > 2000:  # Lowered threshold
                         # Test connectivity
                         test_locations = [
                             (37.7749, -122.4194),  # San Francisco
@@ -259,11 +310,10 @@ class SyntheticEVGenerator:
                             (37.3382, -122.0922),  # San Jose
                         ]
                         
-                        # Quick connectivity test
                         connectivity_score = self._quick_connectivity_test(network, test_locations)
                         logger.info(f"📊 Places network connectivity: {connectivity_score:.2f}")
                         
-                        if connectivity_score > 0.3:
+                        if connectivity_score > 0.4:  # Lowered threshold
                             logger.info(f"✅ Places approach successful: {len(network.nodes)} nodes")
                             network = self._add_network_attributes(network)
                             return network
@@ -275,25 +325,72 @@ class SyntheticEVGenerator:
         except Exception as e:
             logger.warning(f"❌ Multiple places approach failed: {e}")
         
-        # Strategy 3: Single large city
+        # Strategy 3: Single large city with known working names
         try:
-            logger.info("🌉 Trying single city approach (San Francisco)...")
-            network = ox.graph_from_place(
+            logger.info("🌉 Trying single city approach...")
+            single_places = [
                 "San Francisco, California, USA",
-                network_type='drive',
-                simplify=True
-            )
+                "Oakland, California, USA",
+                "San Jose, California, USA",
+                "San Francisco County, California, USA"
+            ]
             
-            if len(network.nodes) > 1000:
-                logger.info(f"✅ Single city successful: {len(network.nodes)} nodes")
-                logger.warning("⚠️ Using limited SF network - some routes may be fallback")
-                network = self._add_network_attributes(network)
-                return network
+            for place in single_places:
+                try:
+                    logger.info(f"🔍 Trying single place: {place}")
+                    network = ox.graph_from_place(
+                        place,
+                        network_type='drive',
+                        simplify=True
+                    )
+                    
+                    if len(network.nodes) > 500:  # Even lower threshold for single city
+                        logger.info(f"✅ Single city successful: {len(network.nodes)} nodes")
+                        logger.warning("⚠️ Using limited network - some routes may be fallback")
+                        network = self._add_network_attributes(network)
+                        return network
+                        
+                except Exception as single_error:
+                    logger.warning(f"❌ Failed single place {place}: {single_error}")
+                    continue
             
         except Exception as e:
             logger.warning(f"❌ Single city approach failed: {e}")
         
+        # Strategy 4: Point-based network (last resort)
+        try:
+            logger.info("📍 Trying point-based approach (last resort)...")
+            # San Francisco center point
+            center_point = (37.7749, -122.4194)
+            network = ox.graph_from_point(
+                center_point,
+                dist=15000,  # 15km radius
+                network_type='drive',
+                simplify=True
+            )
+            
+            if len(network.nodes) > 200:
+                logger.info(f"✅ Point-based approach successful: {len(network.nodes)} nodes")
+                logger.warning("⚠️ Using limited point-based network")
+                network = self._add_network_attributes(network)
+                return network
+                
+        except Exception as e:
+            logger.warning(f"❌ Point-based approach failed: {e}")
+        
         return None
+
+    def _test_geocoding(self, place_name: str) -> bool:
+        """Test if a place name can be geocoded successfully"""
+        try:
+            gdf = ox.geocode_to_gdf(place_name)
+            geom_type = gdf.geometry.iloc[0].geom_type
+            logger.debug(f"Geocoding test for '{place_name}': {geom_type}")
+            return geom_type in ['Polygon', 'MultiPolygon']
+        except Exception as e:
+            logger.debug(f"Geocoding test failed for '{place_name}': {e}")
+            return False
+
 
     def _quick_connectivity_test(self, network: nx.MultiDiGraph, test_locations: List[Tuple[float, float]]) -> float:
         """Quick connectivity test for network validation"""
