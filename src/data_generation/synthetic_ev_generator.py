@@ -2090,9 +2090,8 @@ class SyntheticEVGenerator:
             return 'autumn'
     
 
-
     def generate_charging_sessions(self, vehicle: Dict, routes: List[Dict], date: datetime) -> List[Dict]:
-        """Generate realistic charging sessions for a vehicle"""
+        """Generate realistic charging sessions for a vehicle with proper timing context"""
         charging_sessions = []
         driver_profile = DRIVER_PROFILES[vehicle['driver_profile']]
         driving_style = DRIVING_STYLES[vehicle['driving_style']]
@@ -2101,32 +2100,56 @@ class SyntheticEVGenerator:
         current_soc = vehicle['current_battery_soc']
         battery_capacity = vehicle['battery_capacity']
         
-        # Use driving style for charging threshold instead of driver profile
+        # Use driving style for charging threshold
         charging_threshold = driving_style['charging_threshold']
         
-        # Check if vehicle needs charging at start of day (only if has home charging)
+        # Start of day charging (only if has home charging and battery is low)
         if (vehicle['has_home_charging'] and 
             current_soc < charging_threshold and 
-            np.random.random() < 0.8):  # 80% chance to charge at home if available
+            np.random.random() < 0.8):
             
-            # Home charging session
+            # Generate early morning home charging (5-8 AM)
+            morning_time = date.replace(
+                hour=np.random.randint(5, 8),
+                minute=np.random.randint(0, 60),
+                second=0, microsecond=0
+            )
+            
             home_session = self._generate_home_charging_session(
-                vehicle, date, current_soc
+                vehicle, morning_time, current_soc
             )
             charging_sessions.append(home_session)
             current_soc = home_session['end_soc']
         
         # Process each route and check for charging needs
-        for route in routes:
+        current_time = date.replace(hour=6, minute=0)  # Start day at 6 AM
+        
+        for route_idx, route in enumerate(routes):
+            # Get route timing from GPS trace
+            if route['gps_trace'] and len(route['gps_trace']) > 0:
+                route_start_time = datetime.fromisoformat(route['gps_trace'][0]['timestamp'])
+                route_end_time = datetime.fromisoformat(route['gps_trace'][-1]['timestamp'])
+            else:
+                # Fallback: estimate route timing
+                route_duration_hours = route['total_time_minutes'] / 60
+                route_start_time = current_time
+                route_end_time = route_start_time + timedelta(hours=route_duration_hours)
+            
+            # Update current time
+            current_time = route_end_time
+            
             # Consume energy for this route
             consumption_kwh = route['consumption_data']['total_consumption_kwh']
             energy_consumed_percent = consumption_kwh / battery_capacity
             current_soc -= energy_consumed_percent
             
+            # Ensure SOC doesn't go negative
+            current_soc = max(0.05, current_soc)  # Minimum 5% to avoid complete drain
+            
             # Check if charging is needed
             needs_charging = current_soc < charging_threshold
             
-            # Opportunistic charging (even if not needed) - less likely if has home charging
+            # Opportunistic charging logic (less likely if has home charging)
             opportunistic_prob = 0.1 if vehicle['has_home_charging'] else 0.3
             opportunistic_charging = (
                 current_soc < 0.7 and  # Less than 70%
@@ -2135,26 +2158,61 @@ class SyntheticEVGenerator:
             )
             
             if needs_charging or opportunistic_charging:
-                # Find nearby charging station
-                charging_session = self._generate_public_charging_session(
-                    vehicle, route['destination'], date, current_soc, needs_charging
-                )
+                # Determine charging type based on location and time
+                is_at_home = self._is_near_home(route['destination'], vehicle['home_location'])
+                
+                if is_at_home and vehicle['has_home_charging']:
+                    # Home charging - use route end time with small delay
+                    charging_start_time = route_end_time + timedelta(minutes=np.random.randint(5, 30))
+                    
+                    charging_session = self._generate_home_charging_session(
+                        vehicle, charging_start_time, current_soc
+                    )
+                else:
+                    # Public charging - use route end time with travel delay to station
+                    travel_to_station_minutes = np.random.randint(10, 45)  # Time to find and reach station
+                    charging_start_time = route_end_time + timedelta(minutes=travel_to_station_minutes)
+                    
+                    charging_session = self._generate_public_charging_session(
+                        vehicle, route['destination'], charging_start_time, current_soc, needs_charging
+                    )
                 
                 if charging_session:
                     charging_sessions.append(charging_session)
                     current_soc = charging_session['end_soc']
+                    
+                    # Update current time to after charging
+                    charging_end_time = datetime.fromisoformat(charging_session['end_time'])
+                    current_time = charging_end_time
         
         # End of day home charging (only if has home charging)
         if (vehicle['has_home_charging'] and 
             current_soc < 0.8 and 
-            np.random.random() < 0.9):  # High probability to charge at home overnight
+            np.random.random() < 0.9):
+            
+            # Evening charging - after last route with some delay
+            evening_charging_time = current_time + timedelta(minutes=np.random.randint(30, 120))
+            
+            # Ensure it's reasonable evening time (not too late)
+            if evening_charging_time.hour > 23:
+                evening_charging_time = evening_charging_time.replace(hour=22, minute=0)
             
             end_day_session = self._generate_home_charging_session(
-                vehicle, date + timedelta(hours=20), current_soc
+                vehicle, evening_charging_time, current_soc
             )
             charging_sessions.append(end_day_session)
         
         return charging_sessions
+
+    def _is_near_home(self, location: Tuple[float, float], home_location: Tuple[float, float], 
+                    threshold_km: float = 2.0) -> bool:
+        """Check if location is near home (within threshold)"""
+        from geopy.distance import geodesic
+        distance = geodesic(location, home_location).kilometers
+        return distance <= threshold_km
+
+
+
 
     def _calculate_charging_time(self, energy_needed: float, charging_power: float,
                                start_soc: float, target_soc: float) -> float:
@@ -2185,23 +2243,22 @@ class SyntheticEVGenerator:
 
     
     def _generate_home_charging_session(self, vehicle: Dict, start_time: datetime, 
-                                      start_soc: float) -> Dict:
-        """Generate home charging session"""
+                                  start_soc: float) -> Dict:
+        """Generate home charging session with proper timing"""
         
-        # Home charging is typically overnight, slow charging
         charging_power = self.config['charging']['home_charging_power']  # 7.4 kW
         battery_capacity = vehicle['battery_capacity']
         
         # Charge to 80-90% (typical home charging behavior)
         target_soc = np.random.uniform(0.8, 0.9)
-        energy_needed = (target_soc - start_soc) * battery_capacity
+        energy_needed = max(0, (target_soc - start_soc) * battery_capacity)
         
-        # Calculate charging time (with charging curve - slower as battery fills)
+        # Calculate charging time (with charging curve)
         charging_time_hours = self._calculate_charging_time(
             energy_needed, charging_power, start_soc, target_soc
         )
         
-        # Cost calculation
+        # Cost calculation - home charging uses base electricity rate
         electricity_cost = self.config['charging']['base_electricity_cost']
         total_cost = energy_needed * electricity_cost
         
@@ -2220,19 +2277,25 @@ class SyntheticEVGenerator:
             'cost_usd': round(total_cost, 2),
             'cost_per_kwh': electricity_cost
         }
-    
+
+
+
+
+
+
+
     def _generate_public_charging_session(self, vehicle: Dict, location: Tuple[float, float],
-                                        date: datetime, start_soc: float, 
-                                        is_emergency: bool) -> Optional[Dict]:
-        """Generate public charging session"""
+                                    start_time: datetime, start_soc: float, 
+                                    is_emergency: bool) -> Optional[Dict]:
+        """Generate public charging session with proper timing context"""
         
-        # Find nearby charging stations (using our OpenChargeMap data)
+        # Find nearby charging stations
         nearby_stations = self._find_nearby_charging_stations(location, radius_km=10)
         
         if not nearby_stations:
             return None
         
-        # Select charging station based on preferences
+        # Select charging station
         selected_station = self._select_charging_station(
             nearby_stations, vehicle, is_emergency
         )
@@ -2254,35 +2317,39 @@ class SyntheticEVGenerator:
             ) * 0.8  # Don't always use max power
         
         battery_capacity = vehicle['battery_capacity']
-        energy_needed = (target_soc - start_soc) * battery_capacity
+        energy_needed = max(0, (target_soc - start_soc) * battery_capacity)
         
         # Calculate charging time
         charging_time_hours = self._calculate_charging_time(
             energy_needed, charging_power, start_soc, target_soc
         )
         
-        # Cost calculation (public charging is more expensive)
-        base_cost = selected_station.get('cost_usd_per_kwh', 0.35)
+        # FIXED: Proper peak/off-peak pricing based on actual charging time
+        station_base_cost = selected_station.get('cost_usd_per_kwh', 0.30)
         
-        # Peak hour pricing
-        hour = date.hour
-        is_peak_hour = any(start <= hour <= end for start, end in self.config['charging']['peak_hours'])
+        # Ensure station base cost represents OFF-PEAK pricing
+        off_peak_cost = np.clip(station_base_cost, 0.20, 0.40)
+        
+        # Peak hour pricing logic - use actual charging start time
+        peak_hours = self.config['charging']['peak_hours']
+        is_peak_hour = any(start <= start_time.hour <= end for start, end in peak_hours)
+        
         if is_peak_hour:
-            cost_per_kwh = base_cost * self.config['charging']['peak_pricing_multiplier']
+            cost_per_kwh = off_peak_cost * self.config['charging']['peak_pricing_multiplier']
         else:
-            cost_per_kwh = base_cost
+            cost_per_kwh = off_peak_cost
         
         total_cost = energy_needed * cost_per_kwh
         
         return {
-            'session_id': f"{vehicle['vehicle_id']}_{date.strftime('%Y%m%d_%H%M')}_public",
+            'session_id': f"{vehicle['vehicle_id']}_{start_time.strftime('%Y%m%d_%H%M')}_public",
             'vehicle_id': vehicle['vehicle_id'],
             'charging_type': 'public',
             'station_id': selected_station.get('ocm_id', 'unknown'),
             'station_operator': selected_station.get('operator', 'Unknown'),
             'location': f"({float(selected_station.get('latitude', 0)):.6f}, {float(selected_station.get('longitude', 0)):.6f})",
-            'start_time': date.isoformat(),
-            'end_time': (date + timedelta(hours=charging_time_hours)).isoformat(),
+            'start_time': start_time.isoformat(),
+            'end_time': (start_time + timedelta(hours=charging_time_hours)).isoformat(),
             'start_soc': round(start_soc, 3),
             'end_soc': round(target_soc, 3),
             'energy_delivered_kwh': round(energy_needed, 2),
@@ -2293,16 +2360,88 @@ class SyntheticEVGenerator:
             'is_emergency_charging': is_emergency,
             'connector_type': selected_station.get('connector_types', ['Unknown'])[0]
         }
-    
+
+
+
+    def _generate_mock_charging_stations(self, location: Tuple[float, float], 
+                                    radius_km: int) -> List[Dict]:
+        """Generate mock charging stations with proper geographic validation"""
+        
+        # Realistic number of stations based on area density
+        base_stations = max(2, np.random.poisson(4))  # 2-8 stations typically
+        num_stations = min(base_stations, 8)  # Cap at 8 stations
+        
+        logger.info(f"🎭 Generating {num_stations} mock stations near {location}")
+        
+        # Get realistic station locations
+        station_locations = self._get_realistic_station_locations(location, num_stations)
+        
+        stations = []
+        
+        for i, (station_lat, station_lon) in enumerate(station_locations):
+            
+            # Calculate actual distance from origin
+            distance = geodesic(location, (station_lat, station_lon)).kilometers
+            
+            # Generate realistic station characteristics
+            station_types = [
+                ('AC Level 2', [7.4, 11, 22], [0.6, 0.3, 0.1], (0.25, 0.35)),
+                ('DC Fast Charger', [50, 75, 100, 150], [0.3, 0.3, 0.2, 0.2], (0.35, 0.50)),
+                ('Tesla Supercharger', [150, 250], [0.4, 0.6], (0.30, 0.45))
+            ]
+            
+            # Weight station types by realism (more Level 2, fewer Superchargers)
+            station_type_weights = [0.6, 0.35, 0.05]
+            station_type, powers, power_weights, cost_range = np.random.choice(
+                station_types, p=station_type_weights
+            )
+            
+            max_power = np.random.choice(powers, p=power_weights)
+            cost_per_kwh = np.random.uniform(*cost_range)
+            
+            # Realistic operators
+            operators = ['ChargePoint', 'EVgo', 'Electrify America', 'Blink', 'Tesla', 'Shell Recharge']
+            operator_weights = [0.3, 0.2, 0.2, 0.1, 0.1, 0.1]
+            
+            station = {
+                'ocm_id': f'mock_{i}_{int(station_lat*10000)}_{int(abs(station_lon)*10000)}',
+                'latitude': round(station_lat, 6),
+                'longitude': round(station_lon, 6),
+                'operator': np.random.choice(operators, p=operator_weights),
+                'max_power_kw': max_power,
+                'cost_usd_per_kwh': round(cost_per_kwh, 3),
+                'connector_types': [station_type],
+                'availability': np.random.choice(['Available', 'Busy'], p=[0.8, 0.2]),
+                'distance_km': round(distance, 2),
+                'location_type': 'mock_validated'  # Flag for debugging
+            }
+            
+            stations.append(station)
+        
+        logger.info(f"✅ Generated {len(stations)} validated mock stations")
+        
+        # Log station locations for debugging
+        for station in stations:
+            logger.debug(f"  Station {station['ocm_id']}: ({station['latitude']}, {station['longitude']}) - {station['distance_km']}km")
+        
+        return sorted(stations, key=lambda x: x['distance_km'])
+
+
     def _find_nearby_charging_stations(self, location: Tuple[float, float], 
                                  radius_km: int = 10) -> List[Dict]:
         """Find nearby charging stations using OpenChargeMap API or mock data"""
+        
+        # Validate input location first
+        if not self._is_valid_bay_area_location(location[0], location[1]):
+            logger.warning(f"⚠️ Invalid location for station search: {location}")
+            # Move to nearest valid location
+            location = self._get_nearest_valid_location(location)
+            logger.info(f"🔧 Adjusted to valid location: {location}")
         
         # Try to use real OpenChargeMap data first
         if self.ocm_api:
             try:
                 logger.info(f"🔍 Searching for charging stations near {location} using OpenChargeMap API...")
-                # Get real stations from OpenChargeMap
                 raw_stations = self.ocm_api.find_nearby_stations(
                     location[0], location[1], 
                     distance_km=radius_km,
@@ -2310,28 +2449,33 @@ class SyntheticEVGenerator:
                     country_code='US'
                 )
                 logger.info(f"📡 OpenChargeMap returned {len(raw_stations)} raw stations")
-                # Convert to our expected format
+                
+                # Convert and validate real stations
                 stations = []
                 for raw_station in raw_stations:
                     station_data = self.ocm_api.extract_station_data(raw_station)
                     
-                    if station_data and station_data.get('latitude') and station_data.get('longitude'):
-                        # Convert to format expected by our charging logic
+                    if (station_data and 
+                        station_data.get('latitude') and 
+                        station_data.get('longitude') and
+                        self._is_valid_bay_area_location(station_data['latitude'], station_data['longitude'])):
+                        
                         converted_station = {
                             'ocm_id': station_data['ocm_id'],
                             'latitude': station_data['latitude'],
                             'longitude': station_data['longitude'],
                             'operator': station_data['operator'],
-                            'max_power_kw': station_data['max_power_kw'] or 22,  # Default if missing
+                            'max_power_kw': station_data['max_power_kw'] or 22,
                             'cost_usd_per_kwh': self._estimate_cost_from_power(station_data['max_power_kw'] or 22),
                             'connector_types': station_data['connector_types'] or ['Type 2'],
                             'availability': 'Available' if station_data['is_operational'] else 'Busy',
-                            'distance_km': geodesic(location, (station_data['latitude'], station_data['longitude'])).kilometers
+                            'distance_km': geodesic(location, (station_data['latitude'], station_data['longitude'])).kilometers,
+                            'location_type': 'real_ocm'
                         }
                         stations.append(converted_station)
                 
                 if stations:
-                    logger.info(f"✅ Found {len(stations)} REAL charging stations via OpenChargeMap")
+                    logger.info(f"✅ Found {len(stations)} REAL validated charging stations")
                     return sorted(stations, key=lambda x: x['distance_km'])
                 else:
                     logger.warning("⚠️ OpenChargeMap returned stations but none were valid")
@@ -2341,72 +2485,157 @@ class SyntheticEVGenerator:
         else:
             logger.debug("🔄 No OpenChargeMap API available, using mock stations")
         
-        # Fallback to mock stations
-        logger.info(f"🎭 Generating MOCK charging stations near {location}")
+        # Fallback to validated mock stations
+        logger.info(f"🎭 Generating VALIDATED mock charging stations near {location}")
         return self._generate_mock_charging_stations(location, radius_km)
 
-    def _estimate_cost_from_power(self, power_kw: float) -> float:
-        """Estimate cost per kWh based on charging power"""
-        if power_kw >= 150:  # DC Fast charging
-            return np.random.uniform(0.35, 0.50)
-        elif power_kw >= 50:  # DC Fast charging
-            return np.random.uniform(0.30, 0.45)
-        elif power_kw >= 20:  # AC Level 2
-            return np.random.uniform(0.25, 0.35)
-        else:  # AC Level 1/2
-            return np.random.uniform(0.20, 0.30)
+    def _get_nearest_valid_location(self, location: Tuple[float, float]) -> Tuple[float, float]:
+        """Get nearest valid Bay Area location if input is invalid (e.g., in ocean)"""
+        
+        lat, lon = location
+        
+        # If in Pacific Ocean (too far west), move east
+        if lon < -122.35:
+            lon = -122.35 + np.random.uniform(0.01, 0.05)  # Move slightly inland
+        
+        # If in San Francisco Bay, move to nearest shore
+        if 37.45 <= lat <= 37.85 and -122.35 <= lon <= -122.05:
+            # Move to nearest peninsula or east bay shore
+            if lon < -122.2:  # Closer to peninsula
+                lon = -122.35 - 0.02  # Peninsula side
+            else:  # Closer to east bay
+                lon = -122.05 + 0.02  # East bay side
+        
+        # Ensure within bounds
+        lat = np.clip(lat, 37.25, 37.95)
+        lon = np.clip(lon, -122.35, -121.85)
+        
+        return (lat, lon)
 
-    def _generate_mock_charging_stations(self, location: Tuple[float, float], 
-                                    radius_km: int) -> List[Dict]:
-        """Generate mock charging stations (your existing implementation)"""
-        # Keep your existing mock generation code here
-        num_stations = np.random.poisson(3)  # Average 3 stations nearby
+
+
+    def _is_valid_bay_area_location(self, lat: float, lon: float) -> bool:
+        """Check if coordinates are within valid Bay Area land boundaries"""
+        
+        # Bay Area bounds (tighter than config to avoid ocean)
+        bounds = {
+            'north': 37.95,   # Just south of San Rafael
+            'south': 37.25,   # Just north of San Jose
+            'east': -121.85,  # East Bay hills
+            'west': -122.35   # Avoid Pacific Ocean (was -122.52)
+        }
+        
+        # Basic bounds check
+        if not (bounds['south'] <= lat <= bounds['north'] and 
+                bounds['west'] <= lon <= bounds['east']):
+            return False
+        
+        # Exclude major water bodies
+        water_exclusions = [
+            # San Francisco Bay (rough polygon)
+            {'lat_min': 37.45, 'lat_max': 37.85, 'lon_min': -122.35, 'lon_max': -122.05},
+            # Pacific Ocean near SF
+            {'lat_min': 37.70, 'lat_max': 37.85, 'lon_min': -122.52, 'lon_max': -122.35},
+            # San Pablo Bay
+            {'lat_min': 37.85, 'lat_max': 37.95, 'lon_min': -122.35, 'lon_max': -122.15}
+        ]
+        
+        for exclusion in water_exclusions:
+            if (exclusion['lat_min'] <= lat <= exclusion['lat_max'] and 
+                exclusion['lon_min'] <= lon <= exclusion['lon_max']):
+                return False
+        
+        return True
+
+    def _calculate_lat_lon_offsets(self, origin_lat: float, distance_km: float, angle_rad: float) -> Tuple[float, float]:
+        """Calculate proper lat/lon offsets accounting for Bay Area latitude"""
+        
+        # Latitude: 1 degree ≈ 111 km everywhere
+        lat_offset = (distance_km / 111.0) * np.cos(angle_rad)
+        
+        # Longitude: varies by latitude (shorter at higher latitudes)
+        # At Bay Area latitude (~37.7°), longitude degrees are ~89 km
+        lon_correction = np.cos(np.radians(origin_lat))
+        lon_offset = (distance_km / (111.0 * lon_correction)) * np.sin(angle_rad)
+        
+        return lat_offset, lon_offset
+
+    def _get_realistic_station_locations(self, origin: Tuple[float, float], num_stations: int) -> List[Tuple[float, float]]:
+        """Generate realistic charging station locations near major roads/areas"""
+        
+        # Predefined realistic station areas (near highways, shopping centers, etc.)
+        realistic_areas = [
+            # SF Peninsula - US 101 corridor
+            (37.7749, -122.4194),  # Downtown SF
+            (37.7849, -122.4094),  # SF Financial District
+            (37.6879, -122.4702),  # Daly City
+            (37.5630, -122.3255),  # San Mateo
+            (37.4852, -122.2364),  # Redwood City
+            (37.4419, -122.1430),  # Palo Alto
+            (37.3861, -122.0839),  # Mountain View
+            (37.3688, -122.0363),  # Sunnyvale
+            
+            # East Bay - I-880 corridor
+            (37.8044, -122.2712),  # Oakland
+            (37.8715, -122.2730),  # Berkeley
+            (37.6688, -122.0808),  # Hayward
+            (37.5485, -122.9886),  # Fremont
+            
+            # South Bay
+            (37.3382, -122.0922),  # San Jose
+            (37.3541, -122.0322),  # Santa Clara
+            (37.3230, -122.0322),  # Cupertino
+        ]
+        
         stations = []
+        max_attempts = num_stations * 10  # Prevent infinite loops
+        attempts = 0
         
-        for i in range(num_stations):
-            # Generate station within radius
+        while len(stations) < num_stations and attempts < max_attempts:
+            attempts += 1
+            
+            # Choose strategy: 70% near realistic areas, 30% near origin
+            if np.random.random() < 0.7 and realistic_areas:
+                # Place near a realistic area
+                base_location = np.random.choice(len(realistic_areas))
+                base_lat, base_lon = realistic_areas[base_location]
+                max_distance = 3.0  # Within 3km of realistic area
+            else:
+                # Place near origin
+                base_lat, base_lon = origin
+                max_distance = 8.0  # Within 8km of origin
+            
+            # Generate random location near base
+            distance = np.random.uniform(0.5, max_distance)
             angle = np.random.uniform(0, 2 * np.pi)
-            distance = np.random.uniform(0.5, radius_km)
             
-            # Convert to lat/lon offset
-            lat_offset = (distance / 111.0) * np.cos(angle)
-            lon_offset = (distance / 111.0) * np.sin(angle)
+            # Calculate proper offsets
+            lat_offset, lon_offset = self._calculate_lat_lon_offsets(base_lat, distance, angle)
             
-            station_location = (
-                location[0] + lat_offset,
-                location[1] + lon_offset
-            )
+            station_lat = base_lat + lat_offset
+            station_lon = base_lon + lon_offset
             
-            # Generate realistic station characteristics
-            station_types = ['AC Level 2', 'DC Fast Charger', 'Tesla Supercharger']
-            station_type = np.random.choice(station_types, p=[0.5, 0.4, 0.1])
-            
-            if station_type == 'AC Level 2':
-                max_power = np.random.choice([7.4, 11, 22], p=[0.6, 0.3, 0.1])
-                cost_per_kwh = np.random.uniform(0.25, 0.35)
-            elif station_type == 'DC Fast Charger':
-                max_power = np.random.choice([50, 75, 100, 150], p=[0.3, 0.3, 0.2, 0.2])
-                cost_per_kwh = np.random.uniform(0.35, 0.50)
-            else:  # Tesla Supercharger
-                max_power = np.random.choice([150, 250], p=[0.4, 0.6])
-                cost_per_kwh = np.random.uniform(0.30, 0.45)
-            
-            station = {
-                'ocm_id': f'mock_{i}_{int(location[0]*1000)}_{int(location[1]*1000)}',
-                'latitude': station_location[0],
-                'longitude': station_location[1],
-                'operator': np.random.choice(['ChargePoint', 'EVgo', 'Electrify America', 'Tesla']),
-                'max_power_kw': max_power,
-                'cost_usd_per_kwh': cost_per_kwh,
-                'connector_types': [station_type],
-                'availability': np.random.choice(['Available', 'Busy'], p=[0.7, 0.3]),
-                'distance_km': distance
-            }
-            
-            stations.append(station)
+            # Validate location
+            if self._is_valid_bay_area_location(station_lat, station_lon):
+                stations.append((station_lat, station_lon))
         
-        return sorted(stations, key=lambda x: x['distance_km'])
-
+        # If we couldn't generate enough valid stations, fill with safe defaults
+        while len(stations) < num_stations:
+            safe_location = np.random.choice(realistic_areas)
+            # Add small random offset to safe location
+            lat_offset = np.random.normal(0, 0.005)  # ~500m variation
+            lon_offset = np.random.normal(0, 0.005)
+            
+            station_lat = safe_location[0] + lat_offset
+            station_lon = safe_location[1] + lon_offset
+            
+            if self._is_valid_bay_area_location(station_lat, station_lon):
+                stations.append((station_lat, station_lon))
+            else:
+                # Use safe location as-is
+                stations.append(safe_location)
+        
+        return stations
 
 
 
@@ -2707,8 +2936,8 @@ def main():
     
     # Configuration override for testing
     config_override = {
-        'fleet': {'fleet_size': 50},  # Smaller fleet for testing
-        'simulation': {'simulation_days': 30}  # One week of data
+        'fleet': {'fleet_size': 10},  # Smaller fleet for testing
+        'simulation': {'simulation_days': 7}  # One week of data
     }
     
     # Initialize generator
