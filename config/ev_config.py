@@ -9,8 +9,8 @@ from .physics_constants import PHYSICS_CONSTANTS, TEMPERATURE_EFFICIENCY
 
 # Fleet Configuration
 FLEET_CONFIG = {
-    'fleet_size': 50,
-    'simulation_days': 30,
+    'fleet_size': 10,
+    'simulation_days': 7,
     'start_date': '2024-01-01',
     'region': 'bay_area',
     'depot_location': (37.7749, -122.4194),  # San Francisco
@@ -32,10 +32,10 @@ SIMULATION_CONFIG = {
 
 # Geographic Bounds (Bay Area)
 GEOGRAPHIC_BOUNDS = {
-    'north': 38.0,
-    'south': 37.2,
-    'east': -121.5,
-    'west': -122.8
+    'north': 37.95,   # Tightened from 38.0
+    'south': 37.25,   # Tightened from 37.2
+    'east': -121.85,  # Tightened from -121.5
+    'west': -122.35   # Moved east from -122.8 to avoid Pacific Ocean
 }
 
 # Charging Infrastructure
@@ -45,7 +45,7 @@ CHARGING_CONFIG = {
     'home_charging_power': 7.4,  # kW (Level 2)
     'public_fast_charging_power': 150,  # kW
     'charging_efficiency': 0.9,  # 90% efficiency
-    'peak_hours': [(17, 21)],  # 5 PM - 9 PM
+    'peak_hours': [(7,9),(16, 21)],  # 5 PM - 9 PM and 7 am - 10 am 
     'peak_pricing_multiplier': 1.5,
     'base_electricity_cost': 0.15,  # USD per kWh
     'use_real_charging_data': True,
