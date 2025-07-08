@@ -2089,6 +2089,15 @@ class SyntheticEVGenerator:
         else:
             return 'autumn'
     
+    def _estimate_cost_from_power(self, power_kw: float) -> float:
+        """Estimate charging cost based on power level"""
+        if power_kw >= 150:  # DC Fast charging
+            return np.random.uniform(0.35, 0.50)
+        elif power_kw >= 50:  # Medium DC charging
+            return np.random.uniform(0.30, 0.40)
+        else:  # AC Level 2
+            return np.random.uniform(0.25, 0.35)
+
 
     def generate_charging_sessions(self, vehicle: Dict, routes: List[Dict], date: datetime) -> List[Dict]:
         """Generate realistic charging sessions for a vehicle with proper timing context"""
@@ -2364,7 +2373,7 @@ class SyntheticEVGenerator:
 
 
     def _generate_mock_charging_stations(self, location: Tuple[float, float], 
-                                    radius_km: int) -> List[Dict]:
+                                   radius_km: int) -> List[Dict]:
         """Generate mock charging stations with proper geographic validation"""
         
         # Realistic number of stations based on area density
@@ -2383,21 +2392,36 @@ class SyntheticEVGenerator:
             # Calculate actual distance from origin
             distance = geodesic(location, (station_lat, station_lon)).kilometers
             
-            # Generate realistic station characteristics
-            station_types = [
-                ('AC Level 2', [7.4, 11, 22], [0.6, 0.3, 0.1], (0.25, 0.35)),
-                ('DC Fast Charger', [50, 75, 100, 150], [0.3, 0.3, 0.2, 0.2], (0.35, 0.50)),
-                ('Tesla Supercharger', [150, 250], [0.4, 0.6], (0.30, 0.45))
+            # Generate realistic station characteristics - FIXED VERSION
+            station_type_options = [
+                {
+                    'type': 'AC Level 2',
+                    'powers': [7.4, 11, 22],
+                    'power_weights': [0.6, 0.3, 0.1],
+                    'cost_range': (0.25, 0.35)
+                },
+                {
+                    'type': 'DC Fast Charger',
+                    'powers': [50, 75, 100, 150],
+                    'power_weights': [0.3, 0.3, 0.2, 0.2],
+                    'cost_range': (0.35, 0.50)
+                },
+                {
+                    'type': 'Tesla Supercharger',
+                    'powers': [150, 250],
+                    'power_weights': [0.4, 0.6],
+                    'cost_range': (0.30, 0.45)
+                }
             ]
             
             # Weight station types by realism (more Level 2, fewer Superchargers)
             station_type_weights = [0.6, 0.35, 0.05]
-            station_type, powers, power_weights, cost_range = np.random.choice(
-                station_types, p=station_type_weights
-            )
+            selected_type_idx = np.random.choice(len(station_type_options), p=station_type_weights)
+            selected_type = station_type_options[selected_type_idx]
             
-            max_power = np.random.choice(powers, p=power_weights)
-            cost_per_kwh = np.random.uniform(*cost_range)
+            # Select power level for this station type
+            max_power = np.random.choice(selected_type['powers'], p=selected_type['power_weights'])
+            cost_per_kwh = np.random.uniform(*selected_type['cost_range'])
             
             # Realistic operators
             operators = ['ChargePoint', 'EVgo', 'Electrify America', 'Blink', 'Tesla', 'Shell Recharge']
@@ -2410,7 +2434,7 @@ class SyntheticEVGenerator:
                 'operator': np.random.choice(operators, p=operator_weights),
                 'max_power_kw': max_power,
                 'cost_usd_per_kwh': round(cost_per_kwh, 3),
-                'connector_types': [station_type],
+                'connector_types': [selected_type['type']],
                 'availability': np.random.choice(['Available', 'Busy'], p=[0.8, 0.2]),
                 'distance_km': round(distance, 2),
                 'location_type': 'mock_validated'  # Flag for debugging
