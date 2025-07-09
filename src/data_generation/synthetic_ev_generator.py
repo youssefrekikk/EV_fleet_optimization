@@ -1328,6 +1328,7 @@ class SyntheticEVGenerator:
                 home_charging_enabled and 
                 np.random.random() < home_charging_availability
             )
+            starting_soc = self._generate_realistic_starting_soc(driver_profile, has_home_charging)
             # Generate vehicle-specific characteristics
             vehicle = {
                 'vehicle_id': f'EV_{vehicle_id:03d}',
@@ -1339,7 +1340,7 @@ class SyntheticEVGenerator:
                 'driving_style': driving_style,
                 'has_home_charging': has_home_charging,
                 'home_location': self._generate_home_location(),
-                'current_battery_soc': np.random.uniform(0.3, 0.9),  # Start with random charge
+                'current_battery_soc': starting_soc,  # Start with random charge
                 'odometer': np.random.uniform(0, 50000),  # km
                 'last_service': datetime.now() - timedelta(days=np.random.randint(0, 365))
             }
@@ -1351,6 +1352,59 @@ class SyntheticEVGenerator:
         logger.info(f"Home charging enabled: {home_charging_enabled}")
         logger.info(f"Vehicles with home charging: {sum(1 for v in vehicles if v['has_home_charging'])}")
         return vehicles
+
+    def _generate_realistic_starting_soc(self, driver_profile: str, has_home_charging: bool) -> float:
+        """Generate realistic starting SOC based on driver profile and charging access"""
+        
+        if has_home_charging:
+            # Home charging users typically start with higher SOC
+            soc_options = [0.2, 0.4, 0.6, 0.8, 0.9]
+            soc_weights = [0.05, 0.15, 0.25, 0.35, 0.20]  # Bias toward higher SOC
+        else:
+            # Non-home charging users more variable
+            soc_options = [0.2, 0.3, 0.4, 0.6, 0.8]
+            soc_weights = [0.15, 0.25, 0.30, 0.20, 0.10]  # More spread out
+        
+        # Adjust based on driver profile
+        if driver_profile == 'delivery':
+            # Delivery drivers start day with full charge
+            soc_options = [0.6, 0.8, 0.9, 0.95]
+            soc_weights = [0.1, 0.3, 0.4, 0.2]
+        elif driver_profile == 'rideshare':
+            # Rideshare drivers need good charge to start
+            soc_options = [0.4, 0.6, 0.8, 0.9]
+            soc_weights = [0.1, 0.3, 0.4, 0.2]
+        
+        return np.random.choice(soc_options, p=soc_weights)
+
+    def _generate_preferred_start_hour(self, driver_profile: str) -> int:
+        """Generate preferred daily start hour based on driver profile"""
+        
+        if driver_profile == 'commuter':
+            # Commuters start early, consistent times
+            return np.random.choice([6, 7, 8, 9], p=[0.2, 0.4, 0.3, 0.1])
+        elif driver_profile == 'delivery':
+            # Delivery starts early for efficiency
+            return np.random.choice([5, 6, 7, 8], p=[0.1, 0.4, 0.4, 0.1])
+        elif driver_profile == 'rideshare':
+            # Rideshare varies - some early, some late
+            return np.random.choice([6, 7, 8, 9, 10, 11], p=[0.1, 0.2, 0.2, 0.2, 0.2, 0.1])
+        else:  # casual
+            # Casual drivers start later, more variable
+            return np.random.choice([8, 9, 10, 11, 12], p=[0.1, 0.2, 0.3, 0.3, 0.1])
+
+    def _generate_schedule_variability(self, driver_profile: str) -> float:
+        """Generate schedule variability (hours) based on driver profile"""
+        
+        if driver_profile == 'commuter':
+            return np.random.uniform(0.5, 1.5)  # Very consistent
+        elif driver_profile == 'delivery':
+            return np.random.uniform(0.5, 1.0)  # Consistent for efficiency
+        elif driver_profile == 'rideshare':
+            return np.random.uniform(1.0, 3.0)  # More variable
+        else:  # casual
+            return np.random.uniform(2.0, 4.0)  # Most variable
+
     
     def _select_vehicle_model(self) -> str:
         """Select vehicle model based on market share"""
@@ -1390,8 +1444,85 @@ class SyntheticEVGenerator:
         
         return (base_location[0] + lat_offset, base_location[1] + lon_offset)
     
+
+    def _generate_trip_destination(self, origin: Tuple[float, float], target_distance: float, 
+                              driver_profile: str, is_weekend: bool) -> Tuple[float, float]:
+        """Generate realistic trip destination based on driver profile and distance"""
+        
+        # Driver profile influences destination type
+        if driver_profile == 'commuter' and not is_weekend:
+            # Commuters go to work areas (downtown, business districts)
+            work_areas = [
+                'downtown_sf', 'silicon_valley', 'oakland', 'palo_alto'
+            ]
+            if np.random.random() < 0.7:  # 70% chance to go to work area
+                base_location = MAJOR_LOCATIONS[np.random.choice(work_areas)]
+            else:
+                base_location = self._get_random_destination_within_distance(origin, target_distance)
+        
+        elif driver_profile == 'delivery':
+            # Delivery drivers go to various commercial areas
+            commercial_areas = list(MAJOR_LOCATIONS.keys())
+            base_location = MAJOR_LOCATIONS[np.random.choice(commercial_areas)]
+        
+        elif driver_profile == 'rideshare':
+            # Rideshare drivers go to popular areas
+            popular_areas = [
+                'downtown_sf', 'silicon_valley', 'oakland', 'berkeley', 'san_jose'
+            ]
+            base_location = MAJOR_LOCATIONS[np.random.choice(popular_areas)]
+        
+        else:  # casual
+            # Casual drivers have more random destinations
+            if is_weekend:
+                # Weekend: recreational areas
+                weekend_areas = [
+                    'berkeley', 'mountain_view', 'palo_alto', 'santa_clara'
+                ]
+                base_location = MAJOR_LOCATIONS[np.random.choice(weekend_areas)]
+            else:
+                base_location = self._get_random_destination_within_distance(origin, target_distance)
+        
+        # Add some randomness around the base location
+        if 'base_location' in locals():
+            lat_offset = np.random.normal(0, 0.01)  # ~1km variation
+            lon_offset = np.random.normal(0, 0.01)
+            destination = (base_location[0] + lat_offset, base_location[1] + lon_offset)
+        else:
+            destination = self._get_random_destination_within_distance(origin, target_distance)
+        
+        # Ensure destination is within geographic bounds
+        bounds = self.config['geography']
+        destination = (
+            np.clip(destination[0], bounds['south'], bounds['north']),
+            np.clip(destination[1], bounds['west'], bounds['east'])
+        )
+        
+        return destination
+
+    def _get_random_destination_within_distance(self, origin: Tuple[float, float], 
+                                            target_distance: float) -> Tuple[float, float]:
+        """Generate random destination within target distance"""
+        # Convert distance to approximate lat/lon degrees
+        # Rough approximation: 1 degree ≈ 111 km
+        max_offset = target_distance / 111.0
+        
+        # Generate random direction and distance
+        angle = np.random.uniform(0, 2 * np.pi)
+        distance_factor = np.random.uniform(0.7, 1.3)  # 70-130% of target distance
+        actual_offset = (target_distance * distance_factor) / 111.0
+        
+        lat_offset = actual_offset * np.cos(angle)
+        lon_offset = actual_offset * np.sin(angle)
+        
+        destination = (origin[0] + lat_offset, origin[1] + lon_offset)
+        
+        return destination
+
+
+
     def generate_daily_routes(self, vehicle: Dict, date: datetime) -> List[Dict]:
-        """Generate realistic daily routes for a vehicle"""
+        """Generate realistic daily routes for a vehicle with proper timing"""
         driver_profile = DRIVER_PROFILES[vehicle['driver_profile']]
         driving_style = DRIVING_STYLES[vehicle['driving_style']]
         routes = []
@@ -1416,8 +1547,12 @@ class SyntheticEVGenerator:
         total_daily_km = np.random.uniform(*daily_km_range)
         num_trips = np.random.randint(*trips_range)
         
-        # Generate individual trips
+        # 🔧 FIX: Generate realistic daily start time
+        daily_start_time = self._generate_daily_start_time(vehicle, date, is_weekend)
+        
+        # Generate individual trips with proper timing
         current_location = vehicle['home_location']
+        current_time = daily_start_time
         remaining_km = total_daily_km
         
         for trip_id in range(num_trips):
@@ -1436,94 +1571,78 @@ class SyntheticEVGenerator:
                 current_location, trip_distance, vehicle['driver_profile'], is_weekend
             )
             
-            # Generate route
-            route = self._generate_route(
-                current_location, destination, vehicle, date, trip_id
+            # 🔧 FIX: Generate route with proper timing
+            route = self._generate_route_with_timing(
+                current_location, destination, vehicle, current_time, trip_id
             )
             
             if route:
                 routes.append(route)
                 current_location = destination
                 remaining_km -= trip_distance
+                
+                # 🔧 FIX: Update current time based on route duration + break
+                route_duration = timedelta(minutes=route['total_time_minutes'])
+                break_duration = self._generate_break_duration(vehicle['driver_profile'], trip_id, num_trips)
+                current_time = current_time + route_duration + break_duration
         
         return routes
-    
-    def _generate_trip_destination(self, origin: Tuple[float, float], 
-                                 target_distance: float, driver_profile: str, 
-                                 is_weekend: bool) -> Tuple[float, float]:
-        """Generate realistic trip destination"""
+
+    def _generate_daily_start_time(self, vehicle: Dict, date: datetime, is_weekend: bool) -> datetime:
+        """Generate realistic daily start time for vehicle"""
         
-        if driver_profile == 'commuter' and not is_weekend:
-            # Commuters go to work and back
-            if np.random.random() < 0.6:
-                return self._get_nearby_business_location(origin, target_distance)
+        preferred_hour = vehicle['preferred_start_hour']
+        variability_hours = vehicle['schedule_variability']
         
-        elif driver_profile == 'delivery':
-            # Delivery vehicles go to commercial/residential areas
-            return self._get_delivery_destination(origin, target_distance)
+        # Weekend adjustment
+        if is_weekend:
+            preferred_hour += np.random.randint(0, 3)  # Start later on weekends
         
+        # Add random variability
+        actual_start_hour = preferred_hour + np.random.normal(0, variability_hours)
+        
+        # Ensure reasonable bounds (5 AM to 11 AM for most starts)
+        actual_start_hour = np.clip(actual_start_hour, 5, 11)
+        
+        # Convert to datetime
+        start_hour = int(actual_start_hour)
+        start_minute = int((actual_start_hour - start_hour) * 60)
+        
+        return date.replace(
+            hour=start_hour,
+            minute=start_minute,
+            second=0,
+            microsecond=0
+        )
+
+    def _generate_break_duration(self, driver_profile: str, trip_id: int, total_trips: int) -> timedelta:
+        """Generate realistic break duration between trips"""
+        
+        if driver_profile == 'delivery':
+            # Short breaks for delivery
+            break_minutes = np.random.uniform(10, 30)
         elif driver_profile == 'rideshare':
-            # Rideshare goes to popular destinations
-            return self._get_popular_destination(origin, target_distance)
+            # Variable breaks for rideshare
+            break_minutes = np.random.uniform(5, 45)
+        elif driver_profile == 'commuter':
+            # Longer breaks (work day)
+            if trip_id == 0:  # After first trip (going to work)
+                break_minutes = np.random.uniform(300, 600)  # 5-10 hour work day
+            else:
+                break_minutes = np.random.uniform(30, 120)
+        else:  # casual
+            # Variable casual breaks
+            break_minutes = np.random.uniform(60, 180)
         
-        # Default: random destination within target distance
-        return self._get_random_destination_within_distance(origin, target_distance)
-    
-    def _get_nearby_business_location(self, origin: Tuple[float, float], 
-                                    target_distance: float) -> Tuple[float, float]:
-        """Get business location within target distance"""
-        business_areas = ['downtown_sf', 'silicon_valley', 'palo_alto', 'san_jose']
-        
-        # Find business areas within reasonable distance
-        suitable_areas = []
-        for area_name in business_areas:
-            area_location = MAJOR_LOCATIONS[area_name]
-            distance = geodesic(origin, area_location).kilometers
-            if abs(distance - target_distance) < target_distance * 0.3:  # Within 30% of target
-                suitable_areas.append(area_location)
-        
-        if suitable_areas:
-            base_location = random.choice(suitable_areas)
-        else:
-            base_location = random.choice([MAJOR_LOCATIONS[area] for area in business_areas])
-        
-        # Add small random offset
-        lat_offset = np.random.normal(0, 0.005)
-        lon_offset = np.random.normal(0, 0.005)
-        
-        return (base_location[0] + lat_offset, base_location[1] + lon_offset)
-    
-    def _get_delivery_destination(self, origin: Tuple[float, float], 
-                                target_distance: float) -> Tuple[float, float]:
-        """Get delivery destination (commercial/residential mix)"""
-        # 60% residential, 40% commercial
-        if np.random.random() < 0.6:
-            # Residential delivery
-            residential_areas = ['daly_city', 'hayward', 'fremont', 'mountain_view']
-            base_location = MAJOR_LOCATIONS[np.random.choice(residential_areas)]
-        else:
-            # Commercial delivery
-            commercial_areas = ['downtown_sf', 'oakland', 'san_jose']
-            base_location = MAJOR_LOCATIONS[np.random.choice(commercial_areas)]
-        
-        # Larger offset for delivery (covering more area)
-        lat_offset = np.random.normal(0, 0.01)
-        lon_offset = np.random.normal(0, 0.01)
-        
-        return (base_location[0] + lat_offset, base_location[1] + lon_offset)
-    
-    def _get_popular_destination(self, origin: Tuple[float, float], 
-                               target_distance: float) -> Tuple[float, float]:
-        """Get popular rideshare destination"""
-        popular_areas = ['downtown_sf', 'silicon_valley', 'oakland', 'berkeley']
-        base_location = MAJOR_LOCATIONS[np.random.choice(popular_areas)]
-        
-        # Medium offset for rideshare
-        lat_offset = np.random.normal(0, 0.008)
-        lon_offset = np.random.normal(0, 0.008)
-        
-        return (base_location[0] + lat_offset, base_location[1] + lon_offset)
-    
+        return timedelta(minutes=break_minutes)
+
+
+
+
+
+
+
+
     def _get_random_destination_within_distance(self, origin: Tuple[float, float], 
                                               target_distance: float) -> Tuple[float, float]:
         """Generate random destination within target distance"""
@@ -1571,9 +1690,9 @@ class SyntheticEVGenerator:
             
             return nearest_node
     
-    def _generate_route(self, origin: Tuple[float, float], destination: Tuple[float, float],
-                vehicle: Dict, date: datetime, trip_id: int) -> Dict:
-        """Generate realistic route using OSM road network"""
+    def _generate_route_with_timing(self, origin: Tuple[float, float], destination: Tuple[float, float],
+                               vehicle: Dict, start_time: datetime, trip_id: int) -> Dict:
+        """Generate realistic route using OSM road network with proper timing"""
         
         # Ensure road network is loaded
         if self.road_network is None:
@@ -1592,7 +1711,7 @@ class SyntheticEVGenerator:
             
             if origin_node is None or dest_node is None:
                 logger.error("Could not find nearest nodes")
-                return self._generate_fallback_route(origin, destination, vehicle, date, trip_id)
+                return self._generate_fallback_route_with_timing(origin, destination, vehicle, start_time, trip_id)
             
             # Calculate shortest path
             try:
@@ -1606,7 +1725,7 @@ class SyntheticEVGenerator:
                     path = nx.shortest_path(self.road_network, origin_node, dest_node)
                 except nx.NetworkXNoPath:
                     logger.warning("No path found even without weight - using fallback")
-                    return self._generate_fallback_route(origin, destination, vehicle, date, trip_id)
+                    return self._generate_fallback_route_with_timing(origin, destination, vehicle, start_time, trip_id)
             
             # Extract route details
             route_coords = []
@@ -1649,29 +1768,27 @@ class SyntheticEVGenerator:
                 route_speeds.append(speed_kmh)
                 total_distance += distance_m / 1000  # Convert to km
                 total_time += edge_data.get('travel_time', distance_m / (speed_kmh * 1000 / 3600))
-                
-                # Elevation (simplified - could use elevation API)
-                elevation = np.random.normal(50, 20)  # Simplified elevation model
-                route_elevations.append(elevation)
             
-            # Generate realistic GPS trace with time stamps
-            gps_trace = self._generate_gps_trace(
-                route_coords, route_speeds, route_elevations, date, trip_id
+            # 🔧 FIX: Generate realistic GPS trace with proper start time
+            gps_trace = self._generate_gps_trace_with_timing(
+                route_coords, route_speeds, route_elevations, start_time, trip_id
             )
             
             # Calculate energy consumption
             consumption_data = self._calculate_energy_consumption(
-                gps_trace, vehicle, date
+                gps_trace, vehicle, start_time.date()
             )
             
             route_data = {
                 'vehicle_id': vehicle['vehicle_id'],
-                'trip_id': f"{vehicle['vehicle_id']}_{date.strftime('%Y%m%d')}_{trip_id:02d}",
-                'date': date.strftime('%Y-%m-%d'),
+                'trip_id': f"{vehicle['vehicle_id']}_{start_time.strftime('%Y%m%d')}_{trip_id:02d}",
+                'date': start_time.strftime('%Y-%m-%d'),
                 'origin': origin,
                 'destination': destination,
                 'total_distance_km': total_distance,
                 'total_time_minutes': total_time / 60,
+                'start_time': start_time.isoformat(),  # 🔧 ADD: Actual start time
+                'end_time': (start_time + timedelta(seconds=total_time)).isoformat(),  # 🔧 ADD: End time
                 'gps_trace': gps_trace,
                 'consumption_data': consumption_data,
                 'driver_profile': vehicle['driver_profile'],
@@ -1682,11 +1799,11 @@ class SyntheticEVGenerator:
             
         except Exception as e:
             logger.error(f"Error generating route: {e}")
-            return self._generate_fallback_route(origin, destination, vehicle, date, trip_id)
+            return self._generate_fallback_route_with_timing(origin, destination, vehicle, start_time, trip_id)
 
-    def _generate_fallback_route(self, origin: Tuple[float, float], destination: Tuple[float, float],
-                           vehicle: Dict, date: datetime, trip_id: int) -> Dict:
-        """Generate fallback route when OSM routing fails"""
+    def _generate_fallback_route_with_timing(self, origin: Tuple[float, float], destination: Tuple[float, float],
+                                            vehicle: Dict, start_time: datetime, trip_id: int) -> Dict:
+        """Generate fallback route when OSM routing fails with proper timing"""
         
         # Calculate straight-line distance
         straight_distance = geodesic(origin, destination).kilometers
@@ -1699,20 +1816,24 @@ class SyntheticEVGenerator:
         avg_speed_kmh = 35  # Average city driving speed
         total_time_minutes = (total_distance / avg_speed_kmh) * 60
         
-        # Generate simplified GPS trace (straight line with some variation)
-        gps_trace = self._generate_fallback_gps_trace(origin, destination, date, avg_speed_kmh)
+        # 🔧 FIX: Generate simplified GPS trace with proper start time
+        gps_trace = self._generate_fallback_gps_trace_with_timing(
+            origin, destination, start_time, avg_speed_kmh, total_time_minutes
+        )
         
         # Calculate energy consumption
-        consumption_data = self._calculate_energy_consumption(gps_trace, vehicle, date)
+        consumption_data = self._calculate_energy_consumption(gps_trace, vehicle, start_time.date())
         
         route_data = {
             'vehicle_id': vehicle['vehicle_id'],
-            'trip_id': f"{vehicle['vehicle_id']}_{date.strftime('%Y%m%d')}_{trip_id:02d}",
-            'date': date.strftime('%Y-%m-%d'),
+            'trip_id': f"{vehicle['vehicle_id']}_{start_time.strftime('%Y%m%d')}_{trip_id:02d}",
+            'date': start_time.strftime('%Y-%m-%d'),
             'origin': origin,
             'destination': destination,
             'total_distance_km': total_distance,
             'total_time_minutes': total_time_minutes,
+            'start_time': start_time.isoformat(),  # 🔧 ADD: Actual start time
+            'end_time': (start_time + timedelta(minutes=total_time_minutes)).isoformat(),  # 🔧 ADD: End time
             'gps_trace': gps_trace,
             'consumption_data': consumption_data,
             'driver_profile': vehicle['driver_profile'],
@@ -1722,17 +1843,13 @@ class SyntheticEVGenerator:
         return route_data
 
 
-
-
-
-
-    def _generate_gps_trace(self, route_coords: List[Tuple[float, float]], 
-                           route_speeds: List[float], route_elevations: List[float],
-                           date: datetime, trip_id: int) -> List[Dict]:
-        """Generate realistic GPS trace with timestamps"""
+    def _generate_gps_trace_with_timing(self, route_coords: List[Tuple[float, float]], 
+                                   route_speeds: List[float], route_elevations: List[float],
+                                   start_time: datetime, trip_id: int) -> List[Dict]:
+        """Generate realistic GPS trace with proper timestamps starting from start_time"""
         
         gps_trace = []
-        current_time = date
+        current_time = start_time  # 🔧 FIX: Use actual start time
         
         # Add realistic variations to speed and position
         for i, (coord, speed_kmh, elevation) in enumerate(zip(route_coords, route_speeds, route_elevations)):
@@ -1765,18 +1882,19 @@ class SyntheticEVGenerator:
                 current_time += timedelta(seconds=time_seconds)
         
         return gps_trace
-    
-    def _generate_fallback_gps_trace(self, origin: Tuple[float, float], destination: Tuple[float, float],
-                                date: datetime, avg_speed_kmh: float) -> List[Dict]:
-        """Generate simplified GPS trace for fallback routes"""
+
+    def _generate_fallback_gps_trace_with_timing(self, origin: Tuple[float, float], destination: Tuple[float, float],
+                                                start_time: datetime, avg_speed_kmh: float, 
+                                                total_time_minutes: float) -> List[Dict]:
+        """Generate simplified GPS trace for fallback routes with proper timing"""
         
         # Number of GPS points (roughly every 30 seconds)
         distance_km = geodesic(origin, destination).kilometers
-        travel_time_hours = distance_km / avg_speed_kmh
+        travel_time_hours = total_time_minutes / 60
         num_points = max(5, int(travel_time_hours * 120))  # 2 points per minute
         
         gps_trace = []
-        current_time = date
+        current_time = start_time  # 🔧 FIX: Use actual start time
         
         for i in range(num_points):
             # Linear interpolation between origin and destination
@@ -1807,10 +1925,16 @@ class SyntheticEVGenerator:
             
             # Update time
             if i < num_points - 1:
-                time_increment = (travel_time_hours * 3600) / (num_points - 1)
+                time_increment = (total_time_minutes * 60) / (num_points - 1)
                 current_time += timedelta(seconds=time_increment)
         
         return gps_trace
+
+
+
+
+
+
 
     def _calculate_bearing(self, origin: Tuple[float, float], destination: Tuple[float, float]) -> float:
         """Calculate bearing between two points"""
