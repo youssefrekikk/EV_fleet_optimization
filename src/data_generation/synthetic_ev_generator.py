@@ -2620,9 +2620,9 @@ class SyntheticEVGenerator:
             
             # Choose strategy: 70% near realistic areas, 30% near origin
             if np.random.random() < 0.7 and realistic_areas:
-                # Place near a realistic area
-                base_location = np.random.choice(len(realistic_areas))
-                base_lat, base_lon = realistic_areas[base_location]
+                # Place near a realistic area - FIX: Choose index instead of element
+                base_location_idx = np.random.choice(len(realistic_areas))
+                base_lat, base_lon = realistic_areas[base_location_idx]
                 max_distance = 3.0  # Within 3km of realistic area
             else:
                 # Place near origin
@@ -2645,7 +2645,10 @@ class SyntheticEVGenerator:
         
         # If we couldn't generate enough valid stations, fill with safe defaults
         while len(stations) < num_stations:
-            safe_location = np.random.choice(realistic_areas)
+            # FIX: Choose index instead of element
+            safe_location_idx = np.random.choice(len(realistic_areas))
+            safe_location = realistic_areas[safe_location_idx]
+            
             # Add small random offset to safe location
             lat_offset = np.random.normal(0, 0.005)  # ~500m variation
             lon_offset = np.random.normal(0, 0.005)
@@ -2660,7 +2663,6 @@ class SyntheticEVGenerator:
                 stations.append(safe_location)
         
         return stations
-
 
 
 
