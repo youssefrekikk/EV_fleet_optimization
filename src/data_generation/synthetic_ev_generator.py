@@ -793,172 +793,6 @@ class SyntheticEVGenerator:
 
 
 
-    def _try_osm_approaches(self) -> Optional[nx.MultiDiGraph]:
-        """Try different OSM loading strategies with better place names"""
-        
-        # Strategy 1: Large bounding box (more reliable)
-        try:
-            logger.info("🌐 Trying large bounding box approach...")
-            # Bay Area bounding box: [north, south, east, west]
-            bbox_bounds = (38.0, 37.0, -121.5, -123.0)  # Adjusted bounds
-            network = ox.graph_from_bbox(
-                bbox=bbox_bounds,
-                network_type='drive',
-                simplify=True,
-                retain_all=True
-            )
-            
-            if len(network.nodes) > 800:
-                logger.info(f"✅ Large bounding box successful: {len(network.nodes)} nodes")
-                network = self._add_network_attributes(network)
-                return network
-            else:
-                logger.warning("⚠️ Bounding box network too small")
-                
-        except Exception as e:
-            logger.warning(f"❌ Bounding box approach failed: {e}")
-        
-        # Strategy 2: Multiple connected places with better place names
-        try:
-            logger.info("🏙️ Trying multiple places approach...")
-            place_combinations = [
-                # Try individual counties first (more reliable)
-                [
-                    "San Francisco County, California, USA",
-                    "Alameda County, California, USA", 
-                    "San Mateo County, California, USA"
-                ],
-                # Try major cities
-                [
-                    "San Francisco, California, USA",
-                    "Oakland, California, USA", 
-                    "San Jose, California, USA"
-                ],
-                # Try metro area names
-                [
-                    "San Francisco-Oakland-Berkeley, CA, USA"
-                ],
-                # Single large county
-                [
-                    "Alameda County, California, USA"
-                ]
-            ]
-            
-            for places in place_combinations:
-                try:
-                    logger.info(f"🔍 Trying places: {places}")
-                    
-                    # Test geocoding first
-                    for place in places:
-                        try:
-                            gdf = ox.geocode_to_gdf(place)
-                            logger.info(f"  ✅ Geocoded {place}: {gdf.geometry.iloc[0].geom_type}")
-                        except Exception as geo_error:
-                            logger.warning(f"  ❌ Failed to geocode {place}: {geo_error}")
-                            raise geo_error  # Skip this combination
-                    
-                    # If geocoding works, try to get the network
-                    if len(places) == 1:
-                        network = ox.graph_from_place(
-                            places[0],
-                            network_type='drive',
-                            simplify=True
-                        )
-                    else:
-                        network = ox.graph_from_place(
-                            places,
-                            network_type='drive',
-                            simplify=True
-                        )
-                    
-                    if len(network.nodes) > 2000:  # Lowered threshold
-                        # Test connectivity
-                        test_locations = [
-                            (37.7749, -122.4194),  # San Francisco
-                            (37.8044, -122.2712),  # Oakland
-                            (37.3382, -122.0922),  # San Jose
-                        ]
-                        
-                        connectivity_score = self._quick_connectivity_test(network, test_locations)
-                        logger.info(f"📊 Places network connectivity: {connectivity_score:.2f}")
-                        
-                        if connectivity_score > 0.4:  # Lowered threshold
-                            logger.info(f"✅ Places approach successful: {len(network.nodes)} nodes")
-                            network = self._add_network_attributes(network)
-                            return network
-                    
-                except Exception as place_error:
-                    logger.warning(f"❌ Failed places {places}: {place_error}")
-                    continue
-            
-        except Exception as e:
-            logger.warning(f"❌ Multiple places approach failed: {e}")
-        
-        # Strategy 3: Single large city with known working names
-        try:
-            logger.info("🌉 Trying single city approach...")
-            single_places = [
-                "San Francisco, California, USA",
-                "Oakland, California, USA",
-                "San Jose, California, USA",
-                "San Francisco County, California, USA"
-            ]
-            
-            for place in single_places:
-                try:
-                    logger.info(f"🔍 Trying single place: {place}")
-                    network = ox.graph_from_place(
-                        place,
-                        network_type='drive',
-                        simplify=True
-                    )
-                    
-                    if len(network.nodes) > 500:  # Even lower threshold for single city
-                        logger.info(f"✅ Single city successful: {len(network.nodes)} nodes")
-                        logger.warning("⚠️ Using limited network - some routes may be fallback")
-                        network = self._add_network_attributes(network)
-                        return network
-                        
-                except Exception as single_error:
-                    logger.warning(f"❌ Failed single place {place}: {single_error}")
-                    continue
-            
-        except Exception as e:
-            logger.warning(f"❌ Single city approach failed: {e}")
-        
-        # Strategy 4: Point-based network (last resort)
-        try:
-            logger.info("📍 Trying point-based approach (last resort)...")
-            # San Francisco center point
-            center_point = (37.7749, -122.4194)
-            network = ox.graph_from_point(
-                center_point,
-                dist=15000,  # 15km radius
-                network_type='drive',
-                simplify=True
-            )
-            
-            if len(network.nodes) > 200:
-                logger.info(f"✅ Point-based approach successful: {len(network.nodes)} nodes")
-                logger.warning("⚠️ Using limited point-based network")
-                network = self._add_network_attributes(network)
-                return network
-                
-        except Exception as e:
-            logger.warning(f"❌ Point-based approach failed: {e}")
-        
-        return None
-
-    def _test_geocoding(self, place_name: str) -> bool:
-        """Test if a place name can be geocoded successfully"""
-        try:
-            gdf = ox.geocode_to_gdf(place_name)
-            geom_type = gdf.geometry.iloc[0].geom_type
-            logger.debug(f"Geocoding test for '{place_name}': {geom_type}")
-            return geom_type in ['Polygon', 'MultiPolygon']
-        except Exception as e:
-            logger.debug(f"Geocoding test failed for '{place_name}': {e}")
-            return False
 
 
     def _quick_connectivity_test(self, network: nx.MultiDiGraph, test_locations: List[Tuple[float, float]]) -> float:
@@ -1046,15 +880,7 @@ class SyntheticEVGenerator:
         return network
 
 
-    def rebuild_network(self, force: bool = False):
-        """Rebuild and save the road network"""
-        if not force and self.network_db.network_exists():
-            logger.warning("Network already exists. Use force=True to rebuild anyway.")
-            return
-        
-        logger.info("🔨 Rebuilding road network...")
-        self.road_network = self._create_and_save_network()
-        logger.info("✅ Network rebuild complete")
+
 
     def get_network_info(self) -> Dict:
         """Get information about the current network"""
@@ -1085,13 +911,6 @@ class SyntheticEVGenerator:
             "file_exists": self.network_db.network_exists()
         }
 
-    def clear_network_cache(self):
-        """Clear the cached network to force rebuild"""
-        if self.network_db.network_exists():
-            os.remove(self.network_db.db_path)
-            logger.info("🗑️ Network cache cleared")
-        else:
-            logger.info("ℹ️ No network cache to clear")
 
 
 
@@ -1101,47 +920,6 @@ class SyntheticEVGenerator:
 
 
 
-
-
-    def _test_network_connectivity(self) -> float:
-        """Test network connectivity by trying routes between major Bay Area locations"""
-        if self.road_network is None:
-            return 0.0
-        
-        # Test routes between major locations
-        test_locations = [
-            (37.7749, -122.4194),  # San Francisco
-            (37.8044, -122.2712),  # Oakland
-            (37.3382, -122.0922),  # San Jose
-            (37.5485, -122.9886),  # Fremont
-            (37.4419, -122.1430),  # Palo Alto
-        ]
-        
-        successful_routes = 0
-        total_tests = 0
-        
-        # Test connectivity between all pairs
-        for i, origin in enumerate(test_locations):
-            for j, dest in enumerate(test_locations):
-                if i != j:
-                    total_tests += 1
-                    try:
-                        origin_node = self._find_nearest_node(origin[0], origin[1])
-                        dest_node = self._find_nearest_node(dest[0], dest[1])
-                        
-                        if origin_node and dest_node:
-                            # Try to find path
-                            try:
-                                nx.shortest_path(self.road_network, origin_node, dest_node)
-                                successful_routes += 1
-                            except nx.NetworkXNoPath:
-                                pass
-                    except:
-                        pass
-        
-        connectivity_score = successful_routes / total_tests if total_tests > 0 else 0
-        logger.info(f"Connectivity test: {successful_routes}/{total_tests} routes successful")
-        return connectivity_score
 
     def _add_network_attributes(self, network):  # Add 'network' parameter
         """Add speed and travel time attributes to network edges"""
@@ -1190,115 +968,6 @@ class SyntheticEVGenerator:
             network.edges[u, v, key]['travel_time'] = length / (speed_kmh * 1000 / 3600)
         
         return network  # Return the modified network
-
-
-    def _create_enhanced_mock_network(self) -> nx.MultiDiGraph:
-        """Create an enhanced mock network with better connectivity"""
-        logger.info("Creating enhanced mock network with realistic Bay Area structure...")
-        
-        # Create a more realistic network based on actual Bay Area geography
-        G = nx.MultiDiGraph()
-        
-        # Define major hubs and their connections (simplified Bay Area structure)
-        major_hubs = {
-            'sf_downtown': (37.7749, -122.4194),
-            'sf_sunset': (37.7449, -122.4794),
-            'oakland_downtown': (37.8044, -122.2712),
-            'berkeley': (37.8715, -122.2730),
-            'fremont': (37.5485, -122.9886),
-            'san_jose_downtown': (37.3382, -122.0922),
-            'palo_alto': (37.4419, -122.1430),
-            'mountain_view': (37.3861, -122.0839),
-            'hayward': (37.6688, -122.0808),
-            'daly_city': (37.6879, -122.4702)
-        }
-        
-        # Add hub nodes
-        node_id = 0
-        hub_nodes = {}
-        
-        for hub_name, (lat, lon) in major_hubs.items():
-            G.add_node(node_id, y=lat, x=lon, hub=hub_name)
-            hub_nodes[hub_name] = node_id
-            node_id += 1
-        
-        # Define major connections (highways/bridges)
-        major_connections = [
-            ('sf_downtown', 'oakland_downtown', 80, 8.5),  # Bay Bridge
-            ('sf_downtown', 'sf_sunset', 50, 5.2),
-            ('oakland_downtown', 'berkeley', 60, 6.8),
-            ('oakland_downtown', 'hayward', 70, 12.3),
-            ('hayward', 'fremont', 65, 8.9),
-            ('fremont', 'san_jose_downtown', 75, 25.4),
-            ('san_jose_downtown', 'palo_alto', 60, 15.2),
-            ('palo_alto', 'mountain_view', 55, 8.1),
-            ('sf_downtown', 'daly_city', 45, 12.7),
-            ('daly_city', 'san_jose_downtown', 70, 45.2),  # 101 highway
-            ('berkeley', 'san_jose_downtown', 75, 52.1),   # 880 highway
-        ]
-        
-        # Add major highway connections
-        for hub1, hub2, speed_kmh, distance_km in major_connections:
-            node1 = hub_nodes[hub1]
-            node2 = hub_nodes[hub2]
-            
-            distance_m = distance_km * 1000
-            travel_time = distance_m / (speed_kmh * 1000 / 3600)
-            
-            # Add bidirectional edges
-            G.add_edge(node1, node2, 0, 
-                    length=distance_m, 
-                    speed_kph=speed_kmh, 
-                    travel_time=travel_time,
-                    highway='primary')
-            G.add_edge(node2, node1, 0, 
-                    length=distance_m, 
-                    speed_kph=speed_kmh, 
-                    travel_time=travel_time,
-                    highway='primary')
-        
-        # Add local grid around each hub
-        for hub_name, (hub_lat, hub_lon) in major_hubs.items():
-            hub_node = hub_nodes[hub_name]
-            
-            # Create local grid (5x5) around each hub
-            grid_size = 5
-            grid_spacing = 0.01  # ~1km spacing
-            
-            local_nodes = []
-            
-            for i in range(grid_size):
-                for j in range(grid_size):
-                    if i == 2 and j == 2:  # Skip center (that's the hub)
-                        local_nodes.append(hub_node)
-                        continue
-                    
-                    lat = hub_lat + (i - 2) * grid_spacing
-                    lon = hub_lon + (j - 2) * grid_spacing
-                    
-                    G.add_node(node_id, y=lat, x=lon, hub_area=hub_name)
-                    local_nodes.append(node_id)
-                    node_id += 1
-            
-            # Connect local grid
-            for i in range(grid_size):
-                for j in range(grid_size):
-                    current_idx = i * grid_size + j
-                    current_node = local_nodes[current_idx]
-                    
-                    # Connect to right neighbor
-                    if j < grid_size - 1:
-                        right_node = local_nodes[current_idx + 1]
-                        self._add_local_edge(G, current_node, right_node)
-                    
-                    # Connect to bottom neighbor
-                    if i < grid_size - 1:
-                        bottom_node = local_nodes[current_idx + grid_size]
-                        self._add_local_edge(G, current_node, bottom_node)
-        
-        logger.info(f"Created enhanced mock network with {len(G.nodes)} nodes and {len(G.edges)} edges")
-        return G
-
 
 
 
@@ -1778,6 +1447,8 @@ class SyntheticEVGenerator:
                 total_distance += distance_m / 1000  # Convert to km
                 total_time += edge_data.get('travel_time', distance_m / (speed_kmh * 1000 / 3600))
             
+            # 🔧 FIX: Generate elevation profile AFTER we have all coordinates
+            route_elevations = self._generate_simple_elevation_profile(route_coords)
             # 🔧 FIX: Generate realistic GPS trace with proper start time
             gps_trace = self._generate_gps_trace_with_timing(
                 route_coords, route_speeds, route_elevations, start_time, trip_id
@@ -1810,8 +1481,55 @@ class SyntheticEVGenerator:
             logger.error(f"Error generating route: {e}")
             return self._generate_fallback_route_with_timing(origin, destination, vehicle, start_time, trip_id)
 
+
+    def _generate_simple_elevation_profile(self, route_coords: List[Tuple[float, float]]) -> List[float]:
+        """Generate realistic elevation profile for Bay Area routes"""
+        
+        if not route_coords:
+            return []
+        
+        elevations = []
+        
+        for lat, lon in route_coords:
+            # Use realistic Bay Area elevation
+            elevation = self._generate_realistic_bay_area_elevation(lat, lon)
+            elevations.append(elevation)
+        
+        return elevations
+
+    def _generate_realistic_bay_area_elevation(self, lat: float, lon: float) -> float:
+        """Generate realistic elevation based on Bay Area geography"""
+        
+        # Bay Area elevation zones
+        if 37.75 <= lat <= 37.80 and -122.45 <= lon <= -122.40:
+            # San Francisco hills
+            base_elevation = 100
+            variation = 80
+        elif 37.70 <= lat <= 37.90 and -122.25 <= lon <= -122.05:
+            # East Bay hills
+            base_elevation = 200
+            variation = 150
+        elif 37.40 <= lat <= 37.60 and -122.35 <= lon <= -122.15:
+            # Peninsula hills
+            base_elevation = 150
+            variation = 100
+        elif 37.25 <= lat <= 37.45 and -122.15 <= lon <= -121.85:
+            # South Bay (flatter)
+            base_elevation = 30
+            variation = 20
+        else:
+            # Default Bay Area
+            base_elevation = 50
+            variation = 40
+        
+        # Add realistic variation
+        elevation = base_elevation + np.random.normal(0, variation/3)
+        return max(0, min(800, elevation))  # Bay Area bounds: 0-800m
+
+
+
     def _generate_fallback_route_with_timing(self, origin: Tuple[float, float], destination: Tuple[float, float],
-                                            vehicle: Dict, start_time: datetime, trip_id: int) -> Dict:
+                                        vehicle: Dict, start_time: datetime, trip_id: int) -> Dict:
         """Generate fallback route when OSM routing fails with proper timing"""
         
         # Calculate straight-line distance
@@ -1825,13 +1543,42 @@ class SyntheticEVGenerator:
         avg_speed_kmh = 35  # Average city driving speed
         total_time_minutes = (total_distance / avg_speed_kmh) * 60
         
-        # 🔧 FIX: Generate simplified GPS trace with proper start time
+        # Generate realistic GPS trace with proper speed and elevation data
         gps_trace = self._generate_fallback_gps_trace_with_timing(
             origin, destination, start_time, avg_speed_kmh, total_time_minutes
         )
         
-        # Calculate energy consumption
+        # Calculate energy consumption using the GPS trace
         consumption_data = self._calculate_energy_consumption(gps_trace, vehicle, start_time.date())
+        
+        # FIXED: Ensure consumption is calculated even for fallback routes
+        if consumption_data['total_consumption_kwh'] == 0 and total_distance > 0:
+            # Force minimum consumption calculation
+            fallback_consumption = self._calculate_fallback_consumption(total_distance, avg_speed_kmh, vehicle)
+            consumption_data = {
+                'total_consumption_kwh': fallback_consumption,
+                'total_distance_km': total_distance,
+                'efficiency_kwh_per_100km': (fallback_consumption / total_distance) * 100,
+                'temperature_celsius': 20,  # Default temperature
+                'temperature_efficiency_factor': 1.0,
+                'consumption_breakdown': {
+                    'rolling_resistance': fallback_consumption * 0.4,
+                    'aerodynamic_drag': fallback_consumption * 0.2,
+                    'elevation_change': fallback_consumption * 0.1,
+                    'acceleration': fallback_consumption * 0.1,
+                    'hvac': fallback_consumption * 0.1,
+                    'auxiliary': fallback_consumption * 0.1,
+                    'regenerative_braking': 0.0,
+                    'battery_thermal_loss': 0.0
+                },
+                'weather_conditions': {
+                    'temperature': 20,
+                    'is_raining': False,
+                    'wind_speed_kmh': 10,
+                    'humidity': 0.6,
+                    'season': 'spring'
+                }
+            }
         
         route_data = {
             'vehicle_id': vehicle['vehicle_id'],
@@ -1841,8 +1588,8 @@ class SyntheticEVGenerator:
             'destination': destination,
             'total_distance_km': total_distance,
             'total_time_minutes': total_time_minutes,
-            'start_time': start_time.isoformat(),  # 🔧 ADD: Actual start time
-            'end_time': (start_time + timedelta(minutes=total_time_minutes)).isoformat(),  # 🔧 ADD: End time
+            'start_time': start_time.isoformat(),
+            'end_time': (start_time + timedelta(minutes=total_time_minutes)).isoformat(),
             'gps_trace': gps_trace,
             'consumption_data': consumption_data,
             'driver_profile': vehicle['driver_profile'],
@@ -1850,6 +1597,35 @@ class SyntheticEVGenerator:
         }
         
         return route_data
+    
+    def _calculate_fallback_consumption(self, distance_km: float, avg_speed_kmh: float, vehicle: Dict) -> float:
+        """Calculate fallback energy consumption when GPS trace fails"""
+        
+        # Get vehicle efficiency (kWh/100km)
+        base_efficiency = vehicle.get('efficiency', 18.0)  # Default 18 kWh/100km
+        
+        # Apply speed correction (city driving is less efficient)
+        if avg_speed_kmh < 40:
+            speed_factor = 1.2  # 20% higher consumption in city
+        elif avg_speed_kmh > 80:
+            speed_factor = 1.3  # 30% higher consumption at highway speeds
+        else:
+            speed_factor = 1.0
+        
+        # Calculate base consumption
+        base_consumption = (base_efficiency / 100) * distance_km * speed_factor
+        
+        # Add auxiliary consumption (time-based)
+        travel_time_hours = distance_km / avg_speed_kmh
+        aux_consumption = 0.5 * travel_time_hours  # 0.5 kW auxiliary load
+        
+        total_consumption = base_consumption + aux_consumption
+        
+        # Ensure minimum consumption
+        min_consumption = distance_km * 0.08  # Minimum 8 kWh/100km
+        
+        return max(total_consumption, min_consumption)
+
 
 
     def _generate_gps_trace_with_timing(self, route_coords: List[Tuple[float, float]], 
@@ -1897,13 +1673,13 @@ class SyntheticEVGenerator:
                                                 total_time_minutes: float) -> List[Dict]:
         """Generate simplified GPS trace for fallback routes with proper timing"""
         
-        # Number of GPS points (roughly every 30 seconds)
+        # Number of GPS points (roughly every 30 seconds for better energy calculation)
         distance_km = geodesic(origin, destination).kilometers
         travel_time_hours = total_time_minutes / 60
-        num_points = max(5, int(travel_time_hours * 120))  # 2 points per minute
+        num_points = max(10, int(travel_time_hours * 120))  # 2 points per minute, minimum 10
         
         gps_trace = []
-        current_time = start_time  # 🔧 FIX: Use actual start time
+        current_time = start_time
         
         for i in range(num_points):
             # Linear interpolation between origin and destination
@@ -1916,16 +1692,31 @@ class SyntheticEVGenerator:
             lat += np.random.normal(0, 0.0001)  # Small GPS noise
             lon += np.random.normal(0, 0.0001)
             
-            # Speed variation
-            speed = avg_speed_kmh * np.random.normal(1.0, 0.15)  # 15% variation
-            speed = np.clip(speed, 10, avg_speed_kmh * 1.3)
+            # Realistic speed variation with acceleration/deceleration
+            if i == 0:  # Starting
+                speed = avg_speed_kmh * 0.3  # Start slow
+            elif i == num_points - 1:  # Ending
+                speed = avg_speed_kmh * 0.2  # End slow
+            elif i < 3:  # Accelerating
+                speed = avg_speed_kmh * (0.3 + 0.2 * i)
+            elif i > num_points - 4:  # Decelerating
+                speed = avg_speed_kmh * (1.0 - 0.2 * (num_points - i - 1))
+            else:  # Cruising with variation
+                speed = avg_speed_kmh * np.random.normal(1.0, 0.15)  # 15% variation
+            
+            speed = np.clip(speed, 5, avg_speed_kmh * 1.3)  # Reasonable bounds
+            
+            # Realistic elevation (add some variation)
+            base_elevation = 50  # Bay Area average
+            elevation_variation = 20 * np.sin(progress * np.pi * 2)  # Some hills
+            elevation = base_elevation + elevation_variation + np.random.normal(0, 5)
             
             gps_point = {
                 'timestamp': current_time.isoformat(),
                 'latitude': lat,
                 'longitude': lon,
                 'speed_kmh': speed,
-                'elevation_m': np.random.normal(50, 10),  # Random elevation
+                'elevation_m': elevation,
                 'heading': self._calculate_bearing(origin, destination),
                 'accuracy_m': np.random.uniform(3, 8)
             }
@@ -1938,6 +1729,7 @@ class SyntheticEVGenerator:
                 current_time += timedelta(seconds=time_increment)
         
         return gps_trace
+
 
 
 
@@ -1977,64 +1769,149 @@ class SyntheticEVGenerator:
         heading = np.degrees(np.arctan2(y, x))
         return (heading + 360) % 360  # Normalize to 0-360
     
+
     def _calculate_energy_consumption(self, gps_trace: List[Dict], 
                                 vehicle: Dict, date: datetime) -> Dict:
         """Calculate realistic energy consumption using advanced physics model"""
+        
+        # Validate GPS trace
+        if not gps_trace or len(gps_trace) < 2:
+            logger.warning(f"Invalid GPS trace for {vehicle['vehicle_id']}: {len(gps_trace) if gps_trace else 0} points")
+            return self._create_zero_consumption_result()
         
         # Get weather conditions for the day
         weather = self._get_weather_conditions(date)
         
         # Use the advanced energy model
-        consumption_result = self.energy_model.calculate_energy_consumption(
-            gps_trace, vehicle, weather
-        )
-        
-        # Log any zero consumption cases for debugging
-        if (consumption_result['total_consumption_kwh'] == 0 and 
-            consumption_result['total_distance_km'] > 0):
-            logger.warning(f"Zero consumption detected for {vehicle['vehicle_id']} "
-                        f"with {consumption_result['total_distance_km']:.2f}km distance")
-        
-        return consumption_result    
-    
-    def _get_temperature_efficiency(self, temperature: float) -> float:
-        """Get battery efficiency factor based on temperature"""
-        # Interpolate between known temperature points
-        temp_points = sorted(TEMPERATURE_EFFICIENCY.keys())
-        
-        if temperature <= temp_points[0]:
-            return TEMPERATURE_EFFICIENCY[temp_points[0]]
-        elif temperature >= temp_points[-1]:
-            return TEMPERATURE_EFFICIENCY[temp_points[-1]]
-        
-        # Linear interpolation
-        for i in range(len(temp_points) - 1):
-            if temp_points[i] <= temperature <= temp_points[i + 1]:
-                t1, t2 = temp_points[i], temp_points[i + 1]
-                eff1, eff2 = TEMPERATURE_EFFICIENCY[t1], TEMPERATURE_EFFICIENCY[t2]
+        try:
+            consumption_result = self.energy_model.calculate_energy_consumption(
+                gps_trace, vehicle, weather
+            )
+            
+            # Check if consumption calculation failed
+            if (consumption_result['total_consumption_kwh'] == 0 and 
+                consumption_result['total_distance_km'] > 0):
                 
-                # Linear interpolation
-                factor = (temperature - t1) / (t2 - t1)
-                return eff1 + factor * (eff2 - eff1)
+                logger.warning(f"Zero consumption detected for {vehicle['vehicle_id']} "
+                            f"with {consumption_result['total_distance_km']:.2f}km distance - using fallback")
+                
+                # Use fallback calculation
+                fallback_consumption = self._calculate_fallback_consumption_simple(
+                    consumption_result['total_distance_km'], vehicle
+                )
+                
+                # Update the result with fallback values
+                consumption_result['total_consumption_kwh'] = fallback_consumption
+                consumption_result['efficiency_kwh_per_100km'] = (fallback_consumption / consumption_result['total_distance_km']) * 100
+                
+                # Update breakdown with fallback values
+                consumption_result['consumption_breakdown'] = {
+                    'rolling_resistance': fallback_consumption * 0.4,
+                    'aerodynamic_drag': fallback_consumption * 0.2,
+                    'elevation_change': fallback_consumption * 0.1,
+                    'acceleration': fallback_consumption * 0.1,
+                    'hvac': fallback_consumption * 0.1,
+                    'auxiliary': fallback_consumption * 0.1,
+                    'regenerative_braking': 0.0,
+                    'battery_thermal_loss': 0.0
+                }
+            
+            return consumption_result
+            
+        except Exception as e:
+            logger.error(f"Energy model failed for {vehicle['vehicle_id']}: {e}")
+            
+            # Calculate distance from GPS trace
+            total_distance = 0
+            for i in range(len(gps_trace) - 1):
+                point1 = gps_trace[i]
+                point2 = gps_trace[i + 1]
+                segment_distance = geodesic(
+                    (point1['latitude'], point1['longitude']),
+                    (point2['latitude'], point2['longitude'])
+                ).kilometers
+                total_distance += segment_distance
+            
+            # Use simple fallback calculation
+            fallback_consumption = self._calculate_fallback_consumption_simple(total_distance, vehicle)
+            
+            return {
+                'total_consumption_kwh': fallback_consumption,
+                'total_distance_km': total_distance,
+                'efficiency_kwh_per_100km': (fallback_consumption / total_distance * 100) if total_distance > 0 else 0,
+                'temperature_celsius': weather['temperature'],
+                'temperature_efficiency_factor': 1.0,
+                'consumption_breakdown': {
+                    'rolling_resistance': fallback_consumption * 0.4,
+                    'aerodynamic_drag': fallback_consumption * 0.2,
+                    'elevation_change': fallback_consumption * 0.1,
+                    'acceleration': fallback_consumption * 0.1,
+                    'hvac': fallback_consumption * 0.1,
+                    'auxiliary': fallback_consumption * 0.1,
+                    'regenerative_braking': 0.0,
+                    'battery_thermal_loss': 0.0
+                },
+                'weather_conditions': weather
+            }
+
+    def _calculate_fallback_consumption_simple(self, distance_km: float, vehicle: Dict) -> float:
+        """Simple fallback energy consumption calculation"""
         
-        return 1.0  # Default efficiency
-    
-    def _calculate_hvac_power(self, temperature: float) -> float:
-        """Calculate HVAC power consumption based on temperature"""
-        optimal_temp = 22  # Celsius
-        temp_diff = abs(temperature - optimal_temp)
+        if distance_km <= 0:
+            return 0.0
         
-        base_power = PHYSICS_CONSTANTS['hvac_base_power']
+        # Get vehicle efficiency (kWh/100km)
+        base_efficiency = vehicle.get('efficiency', 18.0)  # Default 18 kWh/100km
         
-        if temp_diff <= 2:
-            return base_power * 0.3  # Minimal HVAC usage
-        elif temp_diff <= 5:
-            return base_power * 0.6
-        elif temp_diff <= 10:
-            return base_power * 1.0
-        else:
-            return base_power * 1.5  # Maximum HVAC usage
-    
+        # Apply driver profile modifier
+        driver_profile = vehicle.get('driver_profile', 'casual')
+        if driver_profile == 'delivery':
+            efficiency_modifier = 1.2  # 20% higher consumption (stop-and-go)
+        elif driver_profile == 'rideshare':
+            efficiency_modifier = 1.1  # 10% higher consumption (city driving)
+        elif driver_profile == 'commuter':
+            efficiency_modifier = 0.95  # 5% lower consumption (highway driving)
+        else:  # casual
+            efficiency_modifier = 1.0
+        
+        # Calculate consumption
+        adjusted_efficiency = base_efficiency * efficiency_modifier
+        consumption = (adjusted_efficiency / 100) * distance_km
+        
+        # Ensure minimum consumption
+        min_consumption = distance_km * 0.08  # Minimum 8 kWh/100km
+        
+        return max(consumption, min_consumption)
+
+    def _create_zero_consumption_result(self) -> Dict:
+        """Create a zero consumption result structure"""
+        return {
+            'total_consumption_kwh': 0.0,
+            'total_distance_km': 0.0,
+            'efficiency_kwh_per_100km': 0.0,
+            'temperature_celsius': 20.0,
+            'temperature_efficiency_factor': 1.0,
+            'consumption_breakdown': {
+                'rolling_resistance': 0.0,
+                'aerodynamic_drag': 0.0,
+                'elevation_change': 0.0,
+                'acceleration': 0.0,
+                'hvac': 0.0,
+                'auxiliary': 0.0,
+                'regenerative_braking': 0.0,
+                'battery_thermal_loss': 0.0
+            },
+            'weather_conditions': {
+                'temperature': 20,
+                'is_raining': False,
+                'wind_speed_kmh': 10,
+                'humidity': 0.6,
+                'season': 'spring'
+            }
+        }
+
+
+
     def _get_weather_conditions(self, date: datetime) -> Dict:
         """Generate realistic weather conditions for a given date"""
         # Seasonal temperature variation
