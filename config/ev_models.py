@@ -8,7 +8,10 @@ EV_MODELS = {
         'weight': 1836,# kg
         'drag_coefficient': 0.23,
         'frontal_area': 2.22,# m²
-        'market_share': 0.21
+        'market_share': 0.21,
+        "nominal_voltage": 339,
+        "internal_resistance_ohms": 0.056,
+        "heat_pump": True
     },
     'tesla_model_y': {
         'battery_capacity': 75,
@@ -18,7 +21,10 @@ EV_MODELS = {
         'weight': 2003,
         'drag_coefficient': 0.23,
         'frontal_area': 2.53,
-        'market_share': 0.18
+        'market_share': 0.18,
+        "nominal_voltage": 340,
+        "internal_resistance_ohms": 0.05,
+        "heat_pump": True
     },
     'nissan_leaf': {
         'battery_capacity': 62,
@@ -28,7 +34,10 @@ EV_MODELS = {
         'weight': 1605,
         'drag_coefficient': 0.28,
         'frontal_area': 2.27,
-        'market_share': 0.10
+        'market_share': 0.10,
+        "nominal_voltage": 360,
+        "internal_resistance_ohms": 0.05,
+        "heat_pump": True
     },
     'chevy_bolt': {
         'battery_capacity': 65,
@@ -38,7 +47,10 @@ EV_MODELS = {
         'weight': 1616,
         'drag_coefficient': 0.32,
         'frontal_area': 2.39,
-        'market_share': 0.09
+        'market_share': 0.09,
+        "nominal_voltage": 360,
+        "internal_resistance_ohms": 0.05,
+        "heat_pump": True
     },
     'ford_mustang_mach_e': {
         'battery_capacity': 88,
@@ -48,7 +60,10 @@ EV_MODELS = {
         'weight': 2232,
         'drag_coefficient': 0.29,
         'frontal_area': 2.64,
-        'market_share': 0.08
+        'market_share': 0.08,
+        "nominal_voltage": 355,
+        "internal_resistance_ohms": 0.05,
+        "heat_pump": True
     },
     'hyundai_ioniq_5': {
         'battery_capacity': 77.4,
@@ -58,7 +73,10 @@ EV_MODELS = {
         'weight': 2268,
         'drag_coefficient': 0.288,
         'frontal_area': 2.85,
-        'market_share': 0.07
+        'market_share': 0.07,
+        "nominal_voltage": 400,
+        "internal_resistance_ohms": 0.04,
+        "heat_pump": True
     },
     'volkswagen_id4': {
         'battery_capacity': 77,
@@ -68,7 +86,10 @@ EV_MODELS = {
         'weight': 2124,
         'drag_coefficient': 0.28,
         'frontal_area': 2.57,
-        'market_share': 0.07
+        'market_share': 0.07,
+        "nominal_voltage": 400,
+        "internal_resistance_ohms": 0.04,
+        "heat_pump": True
     },
     'renault_zoe': {
         'battery_capacity': 52,
@@ -78,7 +99,10 @@ EV_MODELS = {
         'weight': 1468,
         'drag_coefficient': 0.29,
         'frontal_area': 2.0,
-        'market_share': 0.05
+        'market_share': 0.05,
+        "nominal_voltage": 400,
+        "internal_resistance_ohms": 0.04,
+        "heat_pump": True
     },
     'kia_ev6': {
         'battery_capacity': 84,
@@ -88,7 +112,10 @@ EV_MODELS = {
         'weight': 1825,
         'drag_coefficient': 0.28,
         'frontal_area': 2.85,
-        'market_share': 0.05
+        'market_share': 0.05,
+        "nominal_voltage": 400,
+        "internal_resistance_ohms": 0.04,
+        "heat_pump": True
     },
     'nio_et5': {
         'battery_capacity': 100,
@@ -98,7 +125,10 @@ EV_MODELS = {
         'weight': 2145,
         'drag_coefficient': 0.22,
         'frontal_area': 2.7,
-        'market_share': 0.03
+        'market_share': 0.03,
+        "nominal_voltage": 400,
+        "internal_resistance_ohms": 0.03,
+        "heat_pump": True
     },
     'audi_e_tron_gt': {
         'battery_capacity': 105,
@@ -108,7 +138,10 @@ EV_MODELS = {
         'weight': 2355,
         'drag_coefficient': 0.24,
         'frontal_area': 2.60,
-        'market_share': 0.03
+        'market_share': 0.03,
+        "nominal_voltage": 400,
+        "internal_resistance_ohms": 0.04,
+        "heat_pump": True
     },
     'audi_q8_e_tron': {
         'battery_capacity': 106,
@@ -118,7 +151,10 @@ EV_MODELS = {
         'weight': 2600,
         'drag_coefficient': 0.28,
         'frontal_area': 2.9,
-        'market_share': 0.02
+        'market_share': 0.02,
+        "nominal_voltage": 396,
+        "internal_resistance_ohms": 0.04,
+        "heat_pump": True
     },
     'audi_a6_e_tron': {
         'battery_capacity': 100,
@@ -128,7 +164,10 @@ EV_MODELS = {
         'weight': 2250,
         'drag_coefficient': 0.25,
         'frontal_area': 2.6,
-        'market_share': 0.02
+        'market_share': 0.02,
+        "nominal_voltage": 400,
+        "internal_resistance_ohms": 0.04,
+        "heat_pump": True
     }
 }
 

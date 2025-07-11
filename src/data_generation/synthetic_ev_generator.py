@@ -22,7 +22,7 @@ from config.ev_config import *
 from src.data_processing.openchargemap_api import OpenChargeMapAPI
 from dotenv import load_dotenv
 from src.data_generation.road_network_db import NetworkDatabase
-
+from src.data_generation.advanced_energy_model import AdvancedEVEnergyModel
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -79,6 +79,7 @@ class SyntheticEVGenerator:
         self.fleet_vehicles = []
 
         self.network_db = NetworkDatabase()
+        self.energy_model = AdvancedEVEnergyModel()
 
 
         self.ocm_api = None
@@ -1328,7 +1329,13 @@ class SyntheticEVGenerator:
                 home_charging_enabled and 
                 np.random.random() < home_charging_availability
             )
+            # 🔧 FIX: Generate schedule preferences BEFORE using them
+            preferred_start_hour = self._generate_preferred_start_hour(driver_profile)
+            schedule_variability = self._generate_schedule_variability(driver_profile)
+            
+            # 🔧 FIX: More realistic starting SOC distribution
             starting_soc = self._generate_realistic_starting_soc(driver_profile, has_home_charging)
+            
             # Generate vehicle-specific characteristics
             vehicle = {
                 'vehicle_id': f'EV_{vehicle_id:03d}',
@@ -1342,7 +1349,9 @@ class SyntheticEVGenerator:
                 'home_location': self._generate_home_location(),
                 'current_battery_soc': starting_soc,  # Start with random charge
                 'odometer': np.random.uniform(0, 50000),  # km
-                'last_service': datetime.now() - timedelta(days=np.random.randint(0, 365))
+                'last_service': datetime.now() - timedelta(days=np.random.randint(0, 365)),
+                'preferred_start_hour': preferred_start_hour,
+                'schedule_variability': schedule_variability
             }
             
             vehicles.append(vehicle)
@@ -1969,164 +1978,24 @@ class SyntheticEVGenerator:
         return (heading + 360) % 360  # Normalize to 0-360
     
     def _calculate_energy_consumption(self, gps_trace: List[Dict], 
-                                    vehicle: Dict, date: datetime) -> Dict:
-        """Calculate realistic energy consumption based on physics"""
-        
-        if not gps_trace or len(gps_trace) < 2:
-            return {
-                'total_consumption_kwh': 0, 
-                'total_distance_km': 0,
-                'efficiency_kwh_per_100km': 0,
-                'temperature_celsius': 20,
-                'temperature_efficiency_factor': 1.0,
-                'consumption_breakdown': {
-                    'rolling_resistance': 0,
-                    'aerodynamic_drag': 0,
-                    'elevation_change': 0,
-                    'acceleration': 0,
-                    'hvac': 0,
-                    'auxiliary': 0,
-                    'regenerative_braking': 0
-                },
-                'weather_conditions': {
-                    'temperature': 20,
-                    'is_raining': False,
-                    'wind_speed_kmh': 15,
-                    'humidity': 0.65,
-                    'season': 'spring'
-                }
-            }
-        
-        # Get vehicle specifications
-        model_specs = EV_MODELS[vehicle['model']]
-        base_efficiency = model_specs['efficiency']  # kWh/100km
-        vehicle_mass = model_specs['weight']  # kg
-        drag_coeff = model_specs['drag_coefficient']
-        frontal_area = model_specs['frontal_area']  # m²
-        
-        # Physics constants
-        air_density = PHYSICS_CONSTANTS['air_density']
-        rolling_resistance = PHYSICS_CONSTANTS['rolling_resistance']
-        gravity = PHYSICS_CONSTANTS['gravity']
-        motor_efficiency = PHYSICS_CONSTANTS['motor_efficiency']
-        regen_efficiency = PHYSICS_CONSTANTS['regen_efficiency']
-        
-        total_consumption = 0
-        total_distance = 0
-        consumption_breakdown = {
-            'rolling_resistance': 0,
-            'aerodynamic_drag': 0,
-            'elevation_change': 0,
-            'acceleration': 0,
-            'hvac': 0,
-            'auxiliary': 0,
-            'regenerative_braking': 0
-        }
+                                vehicle: Dict, date: datetime) -> Dict:
+        """Calculate realistic energy consumption using advanced physics model"""
         
         # Get weather conditions for the day
         weather = self._get_weather_conditions(date)
-        temperature = weather['temperature']
         
-        # Temperature efficiency factor
-        temp_efficiency = self._get_temperature_efficiency(temperature)
+        # Use the advanced energy model
+        consumption_result = self.energy_model.calculate_energy_consumption(
+            gps_trace, vehicle, weather
+        )
         
-        for i in range(len(gps_trace) - 1):
-            current_point = gps_trace[i]
-            next_point = gps_trace[i + 1]
-            
-            # Calculate segment distance and time
-            distance_m = geodesic(
-                (current_point['latitude'], current_point['longitude']),
-                (next_point['latitude'], next_point['longitude'])
-            ).meters
-            
-            if distance_m == 0:
-                continue
-            
-            # Parse timestamps
-            time1 = datetime.fromisoformat(current_point['timestamp'])
-            time2 = datetime.fromisoformat(next_point['timestamp'])
-            time_diff_s = (time2 - time1).total_seconds()
-            
-            if time_diff_s <= 0:
-                continue
-            
-            # Calculate speeds and acceleration
-            speed_ms = current_point['speed_kmh'] / 3.6  # Convert to m/s
-            next_speed_ms = next_point['speed_kmh'] / 3.6
-            acceleration = (next_speed_ms - speed_ms) / time_diff_s
-            
-            # Elevation change
-            elevation_change = next_point['elevation_m'] - current_point['elevation_m']
-            
-            # Energy calculations (in Joules, then convert to kWh)
-            
-            # 1. Rolling resistance
-            rolling_energy = rolling_resistance * vehicle_mass * gravity * distance_m
-            
-            # 2. Aerodynamic drag
-            drag_energy = 0.5 * air_density * drag_coeff * frontal_area * (speed_ms ** 2) * distance_m
-            
-            # 3. Elevation change (potential energy)
-            elevation_energy = vehicle_mass * gravity * elevation_change
-            
-            # 4. Acceleration energy (kinetic energy change)
-            kinetic_energy_change = 0.5 * vehicle_mass * (next_speed_ms ** 2 - speed_ms ** 2)
-            
-            # 5. HVAC energy (based on temperature)
-            hvac_power = self._calculate_hvac_power(temperature)
-            hvac_energy = hvac_power * 1000 * time_diff_s  # Convert kW to W, then to Joules
-            
-            # 6. Auxiliary systems (lights, electronics, etc.)
-            aux_energy = PHYSICS_CONSTANTS['auxiliary_power'] * 1000 * time_diff_s
-            
-            # Total energy required (before efficiency losses)
-            segment_energy = rolling_energy + drag_energy + hvac_energy + aux_energy
-            
-            # Handle elevation and acceleration separately (can be negative)
-            if elevation_change > 0:  # Going uphill
-                segment_energy += elevation_energy
-                consumption_breakdown['elevation_change'] += elevation_energy / 3.6e6  # Convert to kWh
-            else:  # Going downhill - regenerative braking
-                regen_energy = abs(elevation_energy) * regen_efficiency
-                segment_energy -= regen_energy
-                consumption_breakdown['regenerative_braking'] -= regen_energy / 3.6e6
-            
-            if acceleration > 0:  # Accelerating
-                segment_energy += kinetic_energy_change
-                consumption_breakdown['acceleration'] += kinetic_energy_change / 3.6e6
-            else:  # Decelerating - regenerative braking
-                regen_energy = abs(kinetic_energy_change) * regen_efficiency
-                segment_energy -= regen_energy
-                consumption_breakdown['regenerative_braking'] -= regen_energy / 3.6e6
-            
-            # Apply motor efficiency and temperature effects
-            segment_energy_kwh = (segment_energy / 3.6e6) / motor_efficiency / temp_efficiency
-            
-            # Ensure minimum consumption (can't be negative overall)
-            segment_energy_kwh = max(0, segment_energy_kwh)
-            
-            total_consumption += segment_energy_kwh
-            total_distance += distance_m / 1000  # Convert to km
-            
-            # Update consumption breakdown
-            consumption_breakdown['rolling_resistance'] += rolling_energy / 3.6e6
-            consumption_breakdown['aerodynamic_drag'] += drag_energy / 3.6e6
-            consumption_breakdown['hvac'] += hvac_energy / 3.6e6
-            consumption_breakdown['auxiliary'] += aux_energy / 3.6e6
+        # Log any zero consumption cases for debugging
+        if (consumption_result['total_consumption_kwh'] == 0 and 
+            consumption_result['total_distance_km'] > 0):
+            logger.warning(f"Zero consumption detected for {vehicle['vehicle_id']} "
+                        f"with {consumption_result['total_distance_km']:.2f}km distance")
         
-        # Calculate efficiency
-        efficiency_kwh_per_100km = (total_consumption / total_distance * 100) if total_distance > 0 else 0
-        
-        return {
-            'total_consumption_kwh': round(total_consumption, 3),
-            'total_distance_km': round(total_distance, 2),
-            'efficiency_kwh_per_100km': round(efficiency_kwh_per_100km, 2),
-            'temperature_celsius': temperature,
-            'temperature_efficiency_factor': temp_efficiency,
-            'consumption_breakdown': {k: round(v, 4) for k, v in consumption_breakdown.items()},
-            'weather_conditions': weather
-        }
+        return consumption_result    
     
     def _get_temperature_efficiency(self, temperature: float) -> float:
         """Get battery efficiency factor based on temperature"""
