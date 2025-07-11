@@ -20,6 +20,21 @@ FLEET_CONFIG = {
     }
 }
 
+MAJOR_LOCATIONS = {
+    'downtown_sf': (37.7749, -122.4194),
+    'silicon_valley': (37.3861, -122.0839),
+    'oakland': (37.8044, -122.2712),
+    'berkeley': (37.8715, -122.2730),
+    'san_jose': (37.3382, -122.0922),
+    'palo_alto': (37.4419, -122.1430),
+    'fremont': (37.5485, -122.9886),
+    'daly_city': (37.6879, -122.4702),
+    'hayward': (37.6688, -122.0808),
+    'mountain_view': (37.3861, -122.0839),
+    'sunnyvale': (37.3688, -122.0363),
+    'santa_clara': (37.3541, -122.0322)
+}
+
 # Simulation Parameters
 SIMULATION_CONFIG = {
     'time_step_minutes': 5,
@@ -96,5 +111,6 @@ __all__ = [
     'CHARGING_CONFIG',
     'WEATHER_CONFIG',
     'DATA_GENERATION',
-    'OPTIMIZATION_CONFIG'
+    'OPTIMIZATION_CONFIG',
+    'MAJOR_LOCATIONS'
 ]
