@@ -1447,7 +1447,6 @@ if __name__ == "__main__":
         print("🏗️ Building Bay Area charging infrastructure...")
         manager = build_bay_area_infrastructure(
             api_key=api_key, 
-            scenario="current_reality",
             force_refresh=False
         )
         
@@ -1474,8 +1473,15 @@ if __name__ == "__main__":
         
         # Test with mock-only scenario
         print("\n🎭 Testing mock-only infrastructure...")
-        manager = ChargingInfrastructureManager(scenario="constrained_environment")
+        manager = ChargingInfrastructureManager()
+        
+        # Build mock stations for gaps (this will work without API key)
+        print("Building mock stations...")
+        mock_stats = manager.build_mock_stations_for_gaps(force_refresh=False)
+        print(f"Mock stations result: {mock_stats}")
+        
+        # Get stats
         stats = manager.get_infrastructure_statistics()
-        print(f"Mock infrastructure stats: {stats}")
+        print(f"Infrastructure stats: {stats}")
 
 
