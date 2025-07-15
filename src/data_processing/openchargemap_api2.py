@@ -700,41 +700,117 @@ class ChargingInfrastructureManager:
         
         return modified_df
     
+
+
     def find_nearby_stations(self, latitude: float, longitude: float, 
-                           radius_km: float = 10, max_results: int = 15) -> List[Dict]:
+                        radius_km: int = 10, max_results: int = 15,
+                        include_home: bool = False) -> List[Dict]:
         """
-        Find nearby charging stations from combined infrastructure
-        This is the main method used by the simulation
-        """
-        combined_stations = self.get_combined_infrastructure()
+        Find nearby charging stations - SIMPLIFIED for optimization focus
         
-        if len(combined_stations) == 0:
-            logger.warning(f"No stations available for search near ({latitude:.3f}, {longitude:.3f})")
+        Args:
+            latitude: Search center latitude
+            longitude: Search center longitude
+            radius_km: Search radius in kilometers
+            max_results: Maximum number of results
+            include_home: Whether to include home stations in results
+            
+        Returns:
+            List of nearby stations with basic info
+        """
+        
+        try:
+            # Get combined infrastructure
+            combined_stations = self.get_combined_infrastructure()
+            
+            if len(combined_stations) == 0:
+                logger.warning("No stations available in combined infrastructure")
+                return []
+            
+            # Filter by station type if needed
+            if not include_home:
+                combined_stations = combined_stations[combined_stations['station_type'] != 'home']
+            
+            # Calculate distances
+            from geopy.distance import geodesic
+            search_location = (latitude, longitude)
+            
+            distances = []
+            for _, station in combined_stations.iterrows():
+                station_location = (station['latitude'], station['longitude'])
+                distance_km = geodesic(search_location, station_location).kilometers
+                distances.append(distance_km)
+            
+            combined_stations = combined_stations.copy()
+            combined_stations['distance_km'] = distances
+            
+            # Filter by radius
+            nearby_stations = combined_stations[combined_stations['distance_km'] <= radius_km]
+            
+            # Sort by distance
+            nearby_stations = nearby_stations.sort_values('distance_km')
+            
+            # Limit results
+            nearby_stations = nearby_stations.head(max_results)
+            
+            # Convert to list of dictionaries with simplified fields
+            result_stations = []
+            for _, station in nearby_stations.iterrows():
+                station_dict = {
+                    'station_id': station['station_id'],
+                    'latitude': station['latitude'],
+                    'longitude': station['longitude'],
+                    'distance_km': station['distance_km'],
+                    'max_power_kw': station.get('max_power_kw', 22),
+                    'operator': station.get('operator', 'Unknown'),
+                    'estimated_cost_per_kwh': station.get('estimated_cost_per_kwh', 0.30),
+                    'connector_types': station.get('connector_types', ['Type 1 (J1772)']),
+                    'is_operational': True,  # Simplified - assume all stations are operational
+                    'station_type': station.get('station_type', 'public')
+                }
+                result_stations.append(station_dict)
+            
+            logger.debug(f"Found {len(result_stations)} stations within {radius_km}km of ({latitude:.4f}, {longitude:.4f})")
+            
+            return result_stations
+            
+        except Exception as e:
+            logger.error(f"Error finding nearby stations: {e}")
             return []
+
+    def get_infrastructure_statistics(self) -> Dict:
+        """Get simplified infrastructure statistics"""
         
-        # Calculate distances
-        distances = combined_stations.apply(
-            lambda row: geodesic((latitude, longitude), (row['latitude'], row['longitude'])).kilometers,
-            axis=1
-        )
-        
-        # Filter by radius and operational status
-        nearby_mask = (distances <= radius_km) & (combined_stations['is_operational'] == True)
-        nearby_stations = combined_stations[nearby_mask].copy()
-        nearby_stations['distance_km'] = distances[nearby_mask]
-        
-        # Sort by distance and limit results
-        nearby_stations = nearby_stations.sort_values('distance_km').head(max_results)
-        
-        # Convert to list of dictionaries for compatibility
-        stations_list = []
-        for _, station in nearby_stations.iterrows():
-            station_dict = station.to_dict()
-            stations_list.append(station_dict)
-        
-        logger.debug(f"Found {len(stations_list)} stations within {radius_km}km of ({latitude:.3f}, {longitude:.3f})")
-        return stations_list
-    
+        try:
+            combined_stations = self.get_combined_infrastructure()
+            
+            if len(combined_stations) == 0:
+                return {
+                    'total_stations': 0,
+                    'real_stations': 0,
+                    'mock_stations': 0,
+                    'home_stations': 0
+                }
+            
+            # Count by station type
+            station_counts = combined_stations['station_type'].value_counts()
+            
+            return {
+                'total_stations': len(combined_stations),
+                'real_stations': station_counts.get('real', 0),
+                'mock_stations': station_counts.get('mock', 0),
+                'home_stations': station_counts.get('home', 0)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting infrastructure statistics: {e}")
+            return {
+                'total_stations': 0,
+                'real_stations': 0,
+                'mock_stations': 0,
+                'home_stations': 0
+            }
+
     def generate_home_stations_for_fleet(self, fleet_vehicles: List[Dict]) -> List[Dict]:
         """
         Generate home charging stations for fleet vehicles (PER SIMULATION)
@@ -1085,47 +1161,7 @@ class ChargingInfrastructureManager:
         # Update cached dataframe
         self._combined_stations_df = combined_stations
     
-    def get_infrastructure_statistics(self) -> Dict:
-        """Get comprehensive statistics about current infrastructure"""
-        combined_stations = self.get_combined_infrastructure()
-        
-        if len(combined_stations) == 0:
-            return {'error': 'No infrastructure data available'}
-        
-        # Basic statistics
-        stats = {
-            'total_stations': len(combined_stations),
-            'operational_stations': len(combined_stations[combined_stations['is_operational'] == True]),
-            'total_ports': combined_stations['capacity_ports'].sum(),
-            'available_ports': combined_stations['current_available_ports'].sum(),
-            'utilization_rate': 1 - (combined_stations['current_available_ports'].sum() / 
-                                   combined_stations['capacity_ports'].sum()),
-        }
-        
-        # By data source
-        source_stats = combined_stations['data_source'].value_counts().to_dict()
-        stats['by_source'] = source_stats
-        
-        # By power level
-        power_bins = [0, 22, 50, 150, 1000]
-        power_labels = ['Level 1-2', 'Medium DC', 'Fast DC', 'Ultra-Fast']
-        power_dist = pd.cut(combined_stations['max_power_kw'], bins=power_bins, labels=power_labels)
-        stats['by_power_level'] = power_dist.value_counts().to_dict()
-        
-        # By operator (top 10)
-        operator_stats = combined_stations['operator'].value_counts().head(10).to_dict()
-        stats['by_operator'] = operator_stats
-        
-        # Geographic distribution
-        stats['geographic_bounds'] = {
-            'lat_min': combined_stations['latitude'].min(),
-            'lat_max': combined_stations['latitude'].max(),
-            'lon_min': combined_stations['longitude'].min(),
-            'lon_max': combined_stations['longitude'].max()
-        }
-        
-        return stats
-    
+
     def export_infrastructure_data(self, output_dir: str = None) -> Dict[str, str]:
         """Export all infrastructure data for analysis"""
         if output_dir is None:
@@ -1151,6 +1187,203 @@ class ChargingInfrastructureManager:
         
         logger.info(f"Infrastructure data exported to {output_dir}")
         return exported_files
+
+    def get_home_station_for_vehicle(self, vehicle_id: str) -> Optional[Dict]:
+        """Get home charging station info for a specific vehicle"""
+        
+        try:
+            home_stations = self.get_home_stations()
+            
+            # Find station for this vehicle
+            vehicle_stations = home_stations[home_stations['vehicle_id'] == vehicle_id]
+            
+            if len(vehicle_stations) > 0:
+                station = vehicle_stations.iloc[0]
+                return {
+                    'station_id': station['station_id'],
+                    'latitude': station['latitude'],
+                    'longitude': station['longitude'],
+                    'max_power_kw': station['max_power_kw'],
+                    'capacity_ports': station['capacity_ports']
+                }
+            else:
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting home station for {vehicle_id}: {e}")
+            return None
+
+    def find_nearby_stations(self, latitude: float, longitude: float, 
+                            radius_km: int = 10, max_results: int = 15,
+                            include_home: bool = False) -> List[Dict]:
+        """
+        Find nearby charging stations with current availability
+        
+        Args:
+            latitude: Search center latitude
+            longitude: Search center longitude
+            radius_km: Search radius in kilometers
+            max_results: Maximum number of results
+            include_home: Whether to include home stations in results
+            
+        Returns:
+            List of nearby stations with availability info
+        """
+        
+        try:
+            # Get combined infrastructure
+            combined_stations = self.get_combined_infrastructure()
+            
+            if len(combined_stations) == 0:
+                logger.warning("No stations available in combined infrastructure")
+                return []
+            
+            # Filter by station type if needed
+            if not include_home:
+                combined_stations = combined_stations[combined_stations['station_type'] != 'home']
+            
+            # Calculate distances
+            from geopy.distance import geodesic
+            search_location = (latitude, longitude)
+            
+            distances = []
+            for _, station in combined_stations.iterrows():
+                station_location = (station['latitude'], station['longitude'])
+                distance_km = geodesic(search_location, station_location).kilometers
+                distances.append(distance_km)
+            
+            combined_stations = combined_stations.copy()
+            combined_stations['distance_km'] = distances
+            
+            # Filter by radius
+            nearby_stations = combined_stations[combined_stations['distance_km'] <= radius_km]
+            
+            # Sort by distance
+            nearby_stations = nearby_stations.sort_values('distance_km')
+            
+            # Limit results
+            nearby_stations = nearby_stations.head(max_results)
+            
+            # Convert to list of dictionaries
+            result_stations = []
+            for _, station in nearby_stations.iterrows():
+                station_dict = station.to_dict()
+                
+                # Ensure all required fields are present
+                station_dict.setdefault('current_available_ports', station_dict.get('capacity_ports', 1))
+                station_dict.setdefault('is_operational', True)
+                station_dict.setdefault('estimated_cost_per_kwh', 0.30)
+                
+                result_stations.append(station_dict)
+            
+            logger.debug(f"Found {len(result_stations)} stations within {radius_km}km of ({latitude:.4f}, {longitude:.4f})")
+            
+            return result_stations
+            
+        except Exception as e:
+            logger.error(f"Error finding nearby stations: {e}")
+            return []
+
+    def get_infrastructure_statistics(self) -> Dict:
+        """Get current infrastructure statistics for monitoring"""
+        
+        try:
+            combined_stations = self.get_combined_infrastructure()
+            
+            if len(combined_stations) == 0:
+                return {
+                    'total_stations': 0,
+                    'real_stations': 0,
+                    'mock_stations': 0,
+                    'home_stations': 0,
+                    'available_ports': 0,
+                    'total_capacity': 0,
+                    'utilization_rate': 0.0
+                }
+            
+            # Count by station type
+            station_counts = combined_stations['station_type'].value_counts()
+            
+            # Calculate capacity metrics
+            total_capacity = combined_stations['capacity_ports'].sum()
+            available_ports = combined_stations['current_available_ports'].sum()
+            utilization_rate = 1.0 - (available_ports / total_capacity) if total_capacity > 0 else 0.0
+            
+            return {
+                'total_stations': len(combined_stations),
+                'real_stations': station_counts.get('real', 0),
+                'mock_stations': station_counts.get('mock', 0),
+                'home_stations': station_counts.get('home', 0),
+                'available_ports': int(available_ports),
+                'total_capacity': int(total_capacity),
+                'utilization_rate': utilization_rate
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting infrastructure statistics: {e}")
+            return {
+                'total_stations': 0,
+                'real_stations': 0,
+                'mock_stations': 0,
+                'home_stations': 0,
+                'available_ports': 0,
+                'total_capacity': 0,
+                'utilization_rate': 0.0
+            }
+
+    def export_infrastructure_data(self, output_dir: str) -> Dict[str, str]:
+        """Export infrastructure data to files"""
+        
+        os.makedirs(output_dir, exist_ok=True)
+        exported_files = {}
+        
+        try:
+            # Export combined infrastructure
+            combined_stations = self.get_combined_infrastructure()
+            if len(combined_stations) > 0:
+                combined_file = os.path.join(output_dir, 'charging_infrastructure.csv')
+                combined_stations.to_csv(combined_file, index=False)
+                exported_files['combined_infrastructure'] = combined_file
+            
+            # Export real stations if available
+            real_stations = self.get_real_stations()
+            if len(real_stations) > 0:
+                real_file = os.path.join(output_dir, 'real_charging_stations.csv')
+                real_stations.to_csv(real_file, index=False)
+                exported_files['real_stations'] = real_file
+            
+            # Export mock stations if available
+            mock_stations = self.get_mock_stations()
+            if len(mock_stations) > 0:
+                mock_file = os.path.join(output_dir, 'mock_charging_stations.csv')
+                mock_stations.to_csv(mock_file, index=False)
+                exported_files['mock_stations'] = mock_file
+            
+            # Export home stations if available
+            home_stations = self.get_home_stations()
+            if len(home_stations) > 0:
+                home_file = os.path.join(output_dir, 'home_charging_stations.csv')
+                home_stations.to_csv(home_file, index=False)
+                exported_files['home_stations'] = home_file
+            
+            # Export infrastructure statistics
+            stats = self.get_infrastructure_statistics()
+            stats_file = os.path.join(output_dir, 'infrastructure_statistics.json')
+            with open(stats_file, 'w') as f:
+                json.dump(stats, f, indent=2)
+            exported_files['statistics'] = stats_file
+            
+            logger.info(f"Exported {len(exported_files)} infrastructure files to {output_dir}")
+            
+        except Exception as e:
+            logger.error(f"Error exporting infrastructure data: {e}")
+        
+        return exported_files
+
+
+
+
+
 
 
 
@@ -1200,6 +1433,9 @@ def get_charging_infrastructure(scenario: str = "current_reality") -> ChargingIn
         ChargingInfrastructureManager instance
     """
     return ChargingInfrastructureManager(scenario=scenario)
+
+
+
 
 
 # Example usage and testing

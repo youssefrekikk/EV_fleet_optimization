@@ -19,7 +19,7 @@ import logging
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from config.ev_config import *
-from src.data_processing.openchargemap_api import OpenChargeMapAPI
+from src.data_processing.openchargemap_api2 import ChargingInfrastructureManager
 from dotenv import load_dotenv
 from src.data_generation.road_network_db import NetworkDatabase
 from src.data_generation.advanced_energy_model import AdvancedEVEnergyModel
@@ -60,7 +60,10 @@ class SyntheticEVGenerator:
     def __init__(self, config_override: Optional[Dict] = None):
         """Initialize the synthetic EV data generator"""
         self.config = self._merge_config(config_override)
-        
+
+        logger.info("🏗️ Initializing charging infrastructure...")
+        self.infrastructure_manager = ChargingInfrastructureManager()
+
         self.charging_stations = []
         self.weather_data = []
         self.fleet_vehicles = []
@@ -69,31 +72,13 @@ class SyntheticEVGenerator:
         self.energy_model = AdvancedEVEnergyModel()
 
 
-        self.ocm_api = None
-        self._init_charging_api()
+        
         # Initialize random seed for reproducibility and testing remove when generating final data
         #np.random.seed(42)
         #random.seed(42)
         
         logger.info("Synthetic EV Generator initialized")
     
-    def _init_charging_api(self):
-        """Initialize OpenChargeMap API if key is available"""
-        try:
-            # Try to get API key from environment
-            api_key = os.getenv('OPENCHARGEMAP_API_KEY')
-            print("API Key found:", api_key)
-            if api_key:
-                self.ocm_api = OpenChargeMapAPI(api_key)
-                logger.info("✅ OpenChargeMap API initialized successfully")
-                logger.info(f"API Key found: {api_key[:8]}...")  # Show first 8 chars
-            else:
-                logger.warning("❌ OpenChargeMap API key not found - will use mock charging stations")
-                logger.info("Set OPENCHARGEMAP_API_KEY environment variable to use real data")
-                
-        except Exception as e:
-            logger.error(f"❌ Could not initialize OpenChargeMap API: {e}")
-
 
     def _merge_config(self, override: Optional[Dict]) -> Dict:
         """Merge configuration with overrides"""
@@ -180,6 +165,11 @@ class SyntheticEVGenerator:
         logger.info(f"Generated {len(vehicles)} fleet vehicles")
         logger.info(f"Home charging enabled: {home_charging_enabled}")
         logger.info(f"Vehicles with home charging: {sum(1 for v in vehicles if v['has_home_charging'])}")
+        # NEW: Generate home charging stations for the fleet
+        if home_charging_enabled:
+            logger.info("🏠 Setting up home charging infrastructure...")
+            home_stations = self.infrastructure_manager.generate_home_stations_for_fleet(vehicles)
+            logger.info(f"✅ Generated {len(home_stations)} home charging stations")
         return vehicles
 
     def _generate_realistic_starting_soc(self, driver_profile: str, has_home_charging: bool) -> float:
@@ -1071,13 +1061,51 @@ class SyntheticEVGenerator:
             self.config['weather']['humidity_avg'], 0.1
         )
         
-        return {
+        weather_conditions = {
             'temperature': round(daily_temp, 1),
             'is_raining': is_raining,
             'wind_speed_kmh': max(0, round(wind_speed, 1)),
             'humidity': np.clip(humidity, 0.2, 0.95),
             'season': self._get_season(date)
         }
+        
+        # NEW: Pass weather to infrastructure manager for availability calculations
+        self.infrastructure_manager.set_current_weather(weather_conditions)
+        
+        return weather_conditions
+    
+
+    def log_infrastructure_status(self) -> None:
+        """Log current infrastructure status for debugging"""
+        
+        try:
+            # Get infrastructure statistics
+            stats = self.infrastructure_manager.get_infrastructure_statistics()
+            
+            logger.info("🏗️ INFRASTRUCTURE STATUS:")
+            logger.info(f"  Total stations: {stats.get('total_stations', 0)}")
+            logger.info(f"  Real stations: {stats.get('real_stations', 0)}")
+            logger.info(f"  Mock stations: {stats.get('mock_stations', 0)}")
+            logger.info(f"  Home stations: {stats.get('home_stations', 0)}")
+            logger.info(f"  Available ports: {stats.get('available_ports', 0)}")
+            logger.info(f"  Total capacity: {stats.get('total_capacity', 0)}")
+            logger.info(f"  Utilization rate: {stats.get('utilization_rate', 0):.1%}")
+            
+            # Check for potential issues
+            if stats.get('total_stations', 0) == 0:
+                logger.warning("⚠️ No charging stations available!")
+            elif stats.get('available_ports', 0) == 0:
+                logger.warning("⚠️ No available charging ports!")
+            elif stats.get('utilization_rate', 0) > 0.9:
+                logger.warning("⚠️ Very high utilization rate - may cause charging delays")
+            
+        except Exception as e:
+            logger.error(f"❌ Could not get infrastructure status: {e}")
+
+    def get_infrastructure_manager(self) -> ChargingInfrastructureManager:
+        """Get the infrastructure manager instance for external access"""
+        return self.infrastructure_manager
+
     
     def _get_season(self, date: datetime) -> str:
         """Determine season based on date"""
@@ -1091,18 +1119,9 @@ class SyntheticEVGenerator:
         else:
             return 'autumn'
     
-    def _estimate_cost_from_power(self, power_kw: float) -> float:
-        """Estimate charging cost based on power level"""
-        if power_kw >= 150:  # DC Fast charging
-            return np.random.uniform(0.35, 0.50)
-        elif power_kw >= 50:  # Medium DC charging
-            return np.random.uniform(0.30, 0.40)
-        else:  # AC Level 2
-            return np.random.uniform(0.25, 0.35)
-
 
     def generate_charging_sessions(self, vehicle: Dict, routes: List[Dict], date: datetime) -> List[Dict]:
-        """Generate realistic charging sessions for a vehicle with proper timing context"""
+        """Generate realistic charging sessions - SIMPLIFIED for optimization focus"""
         charging_sessions = []
         driver_profile = DRIVER_PROFILES[vehicle['driver_profile']]
         driving_style = DRIVING_STYLES[vehicle['driving_style']]
@@ -1180,11 +1199,11 @@ class SyntheticEVGenerator:
                         vehicle, charging_start_time, current_soc
                     )
                 else:
-                    # Public charging - use route end time with travel delay to station
+                    # Public charging - use simplified infrastructure method
                     travel_to_station_minutes = np.random.randint(10, 45)  # Time to find and reach station
                     charging_start_time = route_end_time + timedelta(minutes=travel_to_station_minutes)
                     
-                    charging_session = self._generate_public_charging_session(
+                    charging_session = self._generate_public_charging_session_with_infrastructure(
                         vehicle, route['destination'], charging_start_time, current_soc, needs_charging
                     )
                 
@@ -1214,6 +1233,8 @@ class SyntheticEVGenerator:
             charging_sessions.append(end_day_session)
         
         return charging_sessions
+
+
 
     def _is_near_home(self, location: Tuple[float, float], home_location: Tuple[float, float], 
                     threshold_km: float = 2.0) -> bool:
@@ -1255,7 +1276,7 @@ class SyntheticEVGenerator:
     
     def _generate_home_charging_session(self, vehicle: Dict, start_time: datetime, 
                                   start_soc: float) -> Dict:
-        """Generate home charging session with proper timing"""
+        """Generate home charging session - SIMPLIFIED"""
         
         charging_power = self.config['charging']['home_charging_power']  # 7.4 kW
         battery_capacity = vehicle['battery_capacity']
@@ -1273,11 +1294,17 @@ class SyntheticEVGenerator:
         electricity_cost = self.config['charging']['base_electricity_cost']
         total_cost = energy_needed * electricity_cost
         
+        # Simple home station info
+        station_location = f"({float(vehicle['home_location'][0]):.6f}, {float(vehicle['home_location'][1]):.6f})"
+        station_id = f"home_{vehicle['vehicle_id']}"
+        
         return {
             'session_id': f"{vehicle['vehicle_id']}_{start_time.strftime('%Y%m%d_%H%M')}_home",
             'vehicle_id': vehicle['vehicle_id'],
             'charging_type': 'home',
-            'location': f"({float(vehicle['home_location'][0]):.6f}, {float(vehicle['home_location'][1]):.6f})",
+            'station_id': station_id,
+            'station_operator': 'Home',
+            'location': station_location,
             'start_time': start_time.isoformat(),
             'end_time': (start_time + timedelta(hours=charging_time_hours)).isoformat(),
             'start_soc': round(start_soc, 3),
@@ -1286,8 +1313,12 @@ class SyntheticEVGenerator:
             'charging_power_kw': charging_power,
             'duration_hours': round(charging_time_hours, 2),
             'cost_usd': round(total_cost, 2),
-            'cost_per_kwh': electricity_cost
+            'cost_per_kwh': electricity_cost,
+            'is_emergency_charging': False,
+            'connector_type': 'Type 1 (J1772)',
+            'distance_to_station_km': 0.0
         }
+
 
 
 
@@ -1372,339 +1403,141 @@ class SyntheticEVGenerator:
             'connector_type': selected_station.get('connector_types', ['Unknown'])[0]
         }
 
-
-
-    def _generate_mock_charging_stations(self, location: Tuple[float, float], 
-                                   radius_km: int) -> List[Dict]:
-        """Generate mock charging stations with proper geographic validation"""
+    def _generate_public_charging_session_with_infrastructure(self, vehicle: Dict, location: Tuple[float, float],
+                                                        start_time: datetime, start_soc: float, 
+                                                        is_emergency: bool) -> Optional[Dict]:
+        """Generate public charging session using infrastructure manager - SIMPLIFIED"""
         
-        # Realistic number of stations based on area density
-        base_stations = max(2, np.random.poisson(4))  # 2-8 stations typically
-        num_stations = min(base_stations, 8)  # Cap at 8 stations
+        # Find nearby charging stations using infrastructure manager
+        nearby_stations = self.infrastructure_manager.find_nearby_stations(
+            location[0], location[1], 
+            radius_km=self.config['charging']['charging_station_search_radius'],
+            max_results=self.config['charging']['max_charging_stations_per_search']
+        )
         
-        logger.info(f"🎭 Generating {num_stations} mock stations near {location}")
+        if not nearby_stations:
+            logger.warning(f"No charging stations found near {location} for {vehicle['vehicle_id']}")
+            return None
         
-        # Get realistic station locations
-        station_locations = self._get_realistic_station_locations(location, num_stations)
+        # Simple availability filter - just operational stations
+        available_stations = [
+            station for station in nearby_stations 
+            if station.get('is_operational', True)
+        ]
         
-        stations = []
+        if not available_stations:
+            logger.warning(f"No operational charging stations near {location} for {vehicle['vehicle_id']}")
+            return None
         
-        for i, (station_lat, station_lon) in enumerate(station_locations):
-            
-            # Calculate actual distance from origin
-            distance = geodesic(location, (station_lat, station_lon)).kilometers
-            
-            # Generate realistic station characteristics - FIXED VERSION
-            station_type_options = [
-                {
-                    'type': 'AC Level 2',
-                    'powers': [7.4, 11, 22],
-                    'power_weights': [0.6, 0.3, 0.1],
-                    'cost_range': (0.25, 0.35)
-                },
-                {
-                    'type': 'DC Fast Charger',
-                    'powers': [50, 75, 100, 150],
-                    'power_weights': [0.3, 0.3, 0.2, 0.2],
-                    'cost_range': (0.35, 0.50)
-                },
-                {
-                    'type': 'Tesla Supercharger',
-                    'powers': [150, 250],
-                    'power_weights': [0.4, 0.6],
-                    'cost_range': (0.30, 0.45)
-                }
-            ]
-            
-            # Weight station types by realism (more Level 2, fewer Superchargers)
-            station_type_weights = [0.6, 0.35, 0.05]
-            selected_type_idx = np.random.choice(len(station_type_options), p=station_type_weights)
-            selected_type = station_type_options[selected_type_idx]
-            
-            # Select power level for this station type
-            max_power = np.random.choice(selected_type['powers'], p=selected_type['power_weights'])
-            cost_per_kwh = np.random.uniform(*selected_type['cost_range'])
-            
-            # Realistic operators
-            operators = ['ChargePoint', 'EVgo', 'Electrify America', 'Blink', 'Tesla', 'Shell Recharge']
-            operator_weights = [0.3, 0.2, 0.2, 0.1, 0.1, 0.1]
-            
-            station = {
-                'ocm_id': f'mock_{i}_{int(station_lat*10000)}_{int(abs(station_lon)*10000)}',
-                'latitude': round(station_lat, 6),
-                'longitude': round(station_lon, 6),
-                'operator': np.random.choice(operators, p=operator_weights),
-                'max_power_kw': max_power,
-                'cost_usd_per_kwh': round(cost_per_kwh, 3),
-                'connector_types': [selected_type['type']],
-                'availability': np.random.choice(['Available', 'Busy'], p=[0.8, 0.2]),
-                'distance_km': round(distance, 2),
-                'location_type': 'mock_validated'  # Flag for debugging
-            }
-            
-            stations.append(station)
+        # SIMPLIFIED: Select station using simple distance + cost logic
+        selected_station = self._select_station_simple(available_stations, vehicle, is_emergency)
         
-        logger.info(f"✅ Generated {len(stations)} validated mock stations")
+        if not selected_station:
+            return None
         
-        # Log station locations for debugging
-        for station in stations:
-            logger.debug(f"  Station {station['ocm_id']}: ({station['latitude']}, {station['longitude']}) - {station['distance_km']}km")
-        
-        return sorted(stations, key=lambda x: x['distance_km'])
-
-
-    def _find_nearby_charging_stations(self, location: Tuple[float, float], 
-                                 radius_km: int = 10) -> List[Dict]:
-        """Find nearby charging stations using OpenChargeMap API or mock data"""
-        
-        # Validate input location first
-        if not self._is_valid_bay_area_location(location[0], location[1]):
-            logger.warning(f"⚠️ Invalid location for station search: {location}")
-            # Move to nearest valid location
-            location = self._get_nearest_valid_location(location)
-            logger.info(f"🔧 Adjusted to valid location: {location}")
-        
-        # Try to use real OpenChargeMap data first
-        if self.ocm_api:
-            try:
-                logger.info(f"🔍 Searching for charging stations near {location} using OpenChargeMap API...")
-                raw_stations = self.ocm_api.find_nearby_stations(
-                    location[0], location[1], 
-                    distance_km=radius_km,
-                    max_results=15,
-                    country_code='US'
-                )
-                logger.info(f"📡 OpenChargeMap returned {len(raw_stations)} raw stations")
-                
-                # Convert and validate real stations
-                stations = []
-                for raw_station in raw_stations:
-                    station_data = self.ocm_api.extract_station_data(raw_station)
-                    
-                    if (station_data and 
-                        station_data.get('latitude') and 
-                        station_data.get('longitude') and
-                        self._is_valid_bay_area_location(station_data['latitude'], station_data['longitude'])):
-                        
-                        converted_station = {
-                            'ocm_id': station_data['ocm_id'],
-                            'latitude': station_data['latitude'],
-                            'longitude': station_data['longitude'],
-                            'operator': station_data['operator'],
-                            'max_power_kw': station_data['max_power_kw'] or 22,
-                            'cost_usd_per_kwh': self._estimate_cost_from_power(station_data['max_power_kw'] or 22),
-                            'connector_types': station_data['connector_types'] or ['Type 2'],
-                            'availability': 'Available' if station_data['is_operational'] else 'Busy',
-                            'distance_km': geodesic(location, (station_data['latitude'], station_data['longitude'])).kilometers,
-                            'location_type': 'real_ocm'
-                        }
-                        stations.append(converted_station)
-                
-                if stations:
-                    logger.info(f"✅ Found {len(stations)} REAL validated charging stations")
-                    return sorted(stations, key=lambda x: x['distance_km'])
-                else:
-                    logger.warning("⚠️ OpenChargeMap returned stations but none were valid")
-                    
-            except Exception as e:
-                logger.warning(f"❌ OpenChargeMap API failed: {e}, falling back to mock data")
+        # Determine charging parameters
+        if is_emergency:
+            # Emergency charging - charge to 80%
+            target_soc = 0.8
+            charging_power = min(
+                selected_station.get('max_power_kw', 50),
+                vehicle['max_charging_speed']
+            )
         else:
-            logger.debug("🔄 No OpenChargeMap API available, using mock stations")
+            # Opportunistic charging - partial charge
+            target_soc = np.random.uniform(0.6, 0.8)
+            charging_power = min(
+                selected_station.get('max_power_kw', 22),
+                vehicle['max_charging_speed']
+            ) * 0.8  # Don't always use max power
         
-        # Fallback to validated mock stations
-        logger.info(f"🎭 Generating VALIDATED mock charging stations near {location}")
-        return self._generate_mock_charging_stations(location, radius_km)
-
-    def _get_nearest_valid_location(self, location: Tuple[float, float]) -> Tuple[float, float]:
-        """Get nearest valid Bay Area location if input is invalid (e.g., in ocean)"""
+        battery_capacity = vehicle['battery_capacity']
+        energy_needed = max(0, (target_soc - start_soc) * battery_capacity)
         
-        lat, lon = location
+        # Calculate charging time
+        charging_time_hours = self._calculate_charging_time(
+            energy_needed, charging_power, start_soc, target_soc
+        )
         
-        # If in Pacific Ocean (too far west), move east
-        if lon < -122.35:
-            lon = -122.35 + np.random.uniform(0.01, 0.05)  # Move slightly inland
+        # Calculate cost with proper peak/off-peak pricing
+        station_base_cost = selected_station.get('estimated_cost_per_kwh', 0.30)
         
-        # If in San Francisco Bay, move to nearest shore
-        if 37.45 <= lat <= 37.85 and -122.35 <= lon <= -122.05:
-            # Move to nearest peninsula or east bay shore
-            if lon < -122.2:  # Closer to peninsula
-                lon = -122.35 - 0.02  # Peninsula side
-            else:  # Closer to east bay
-                lon = -122.05 + 0.02  # East bay side
+        # Peak hour pricing logic
+        peak_hours = self.config['charging']['peak_hours']
+        is_peak_hour = any(start <= start_time.hour <= end for start, end in peak_hours)
         
-        # Ensure within bounds
-        lat = np.clip(lat, 37.25, 37.95)
-        lon = np.clip(lon, -122.35, -121.85)
+        if is_peak_hour:
+            cost_per_kwh = station_base_cost * self.config['charging']['peak_pricing_multiplier']
+        else:
+            cost_per_kwh = station_base_cost
         
-        return (lat, lon)
-
-
-
-    def _is_valid_bay_area_location(self, lat: float, lon: float) -> bool:
-        """Check if coordinates are within valid Bay Area land boundaries"""
+        total_cost = energy_needed * cost_per_kwh
         
-        # Bay Area bounds (tighter than config to avoid ocean)
-        bounds = {
-            'north': 37.95,   # Just south of San Rafael
-            'south': 37.25,   # Just north of San Jose
-            'east': -121.85,  # East Bay hills
-            'west': -122.35   # Avoid Pacific Ocean (was -122.52)
+        # Create charging session
+        charging_session = {
+            'session_id': f"{vehicle['vehicle_id']}_{start_time.strftime('%Y%m%d_%H%M')}_public",
+            'vehicle_id': vehicle['vehicle_id'],
+            'charging_type': 'public',
+            'station_id': selected_station.get('station_id', 'unknown'),
+            'station_operator': selected_station.get('operator', 'Unknown'),
+            'location': f"({float(selected_station.get('latitude', 0)):.6f}, {float(selected_station.get('longitude', 0)):.6f})",
+            'start_time': start_time.isoformat(),
+            'end_time': (start_time + timedelta(hours=charging_time_hours)).isoformat(),
+            'start_soc': round(start_soc, 3),
+            'end_soc': round(target_soc, 3),
+            'energy_delivered_kwh': round(energy_needed, 2),
+            'charging_power_kw': charging_power,
+            'duration_hours': round(charging_time_hours, 2),
+            'cost_usd': round(total_cost, 2),
+            'cost_per_kwh': round(cost_per_kwh, 3),
+            'is_emergency_charging': is_emergency,
+            'connector_type': selected_station.get('connector_types', ['Unknown'])[0] if selected_station.get('connector_types') else 'Unknown',
+            'distance_to_station_km': selected_station.get('distance_km', 0)
         }
         
-        # Basic bounds check
-        if not (bounds['south'] <= lat <= bounds['north'] and 
-                bounds['west'] <= lon <= bounds['east']):
-            return False
-        
-        # Exclude major water bodies
-        water_exclusions = [
-            # San Francisco Bay (rough polygon)
-            {'lat_min': 37.45, 'lat_max': 37.85, 'lon_min': -122.35, 'lon_max': -122.05},
-            # Pacific Ocean near SF
-            {'lat_min': 37.70, 'lat_max': 37.85, 'lon_min': -122.52, 'lon_max': -122.35},
-            # San Pablo Bay
-            {'lat_min': 37.85, 'lat_max': 37.95, 'lon_min': -122.35, 'lon_max': -122.15}
-        ]
-        
-        for exclusion in water_exclusions:
-            if (exclusion['lat_min'] <= lat <= exclusion['lat_max'] and 
-                exclusion['lon_min'] <= lon <= exclusion['lon_max']):
-                return False
-        
-        return True
+        return charging_session
 
-    def _calculate_lat_lon_offsets(self, origin_lat: float, distance_km: float, angle_rad: float) -> Tuple[float, float]:
-        """Calculate proper lat/lon offsets accounting for Bay Area latitude"""
-        
-        # Latitude: 1 degree ≈ 111 km everywhere
-        lat_offset = (distance_km / 111.0) * np.cos(angle_rad)
-        
-        # Longitude: varies by latitude (shorter at higher latitudes)
-        # At Bay Area latitude (~37.7°), longitude degrees are ~89 km
-        lon_correction = np.cos(np.radians(origin_lat))
-        lon_offset = (distance_km / (111.0 * lon_correction)) * np.sin(angle_rad)
-        
-        return lat_offset, lon_offset
-
-    def _get_realistic_station_locations(self, origin: Tuple[float, float], num_stations: int) -> List[Tuple[float, float]]:
-        """Generate realistic charging station locations near major roads/areas"""
-        
-        # Predefined realistic station areas (near highways, shopping centers, etc.)
-        realistic_areas = [
-            # SF Peninsula - US 101 corridor
-            (37.7749, -122.4194),  # Downtown SF
-            (37.7849, -122.4094),  # SF Financial District
-            (37.6879, -122.4702),  # Daly City
-            (37.5630, -122.3255),  # San Mateo
-            (37.4852, -122.2364),  # Redwood City
-            (37.4419, -122.1430),  # Palo Alto
-            (37.3861, -122.0839),  # Mountain View
-            (37.3688, -122.0363),  # Sunnyvale
-            
-            # East Bay - I-880 corridor
-            (37.8044, -122.2712),  # Oakland
-            (37.8715, -122.2730),  # Berkeley
-            (37.6688, -122.0808),  # Hayward
-            (37.5485, -122.9886),  # Fremont
-            
-            # South Bay
-            (37.3382, -122.0922),  # San Jose
-            (37.3541, -122.0322),  # Santa Clara
-            (37.3230, -122.0322),  # Cupertino
-        ]
-        
-        stations = []
-        max_attempts = num_stations * 10  # Prevent infinite loops
-        attempts = 0
-        
-        while len(stations) < num_stations and attempts < max_attempts:
-            attempts += 1
-            
-            # Choose strategy: 70% near realistic areas, 30% near origin
-            if np.random.random() < 0.7 and realistic_areas:
-                # Place near a realistic area - FIX: Choose index instead of element
-                base_location_idx = np.random.choice(len(realistic_areas))
-                base_lat, base_lon = realistic_areas[base_location_idx]
-                max_distance = 3.0  # Within 3km of realistic area
-            else:
-                # Place near origin
-                base_lat, base_lon = origin
-                max_distance = 8.0  # Within 8km of origin
-            
-            # Generate random location near base
-            distance = np.random.uniform(0.5, max_distance)
-            angle = np.random.uniform(0, 2 * np.pi)
-            
-            # Calculate proper offsets
-            lat_offset, lon_offset = self._calculate_lat_lon_offsets(base_lat, distance, angle)
-            
-            station_lat = base_lat + lat_offset
-            station_lon = base_lon + lon_offset
-            
-            # Validate location
-            if self._is_valid_bay_area_location(station_lat, station_lon):
-                stations.append((station_lat, station_lon))
-        
-        # If we couldn't generate enough valid stations, fill with safe defaults
-        while len(stations) < num_stations:
-            # FIX: Choose index instead of element
-            safe_location_idx = np.random.choice(len(realistic_areas))
-            safe_location = realistic_areas[safe_location_idx]
-            
-            # Add small random offset to safe location
-            lat_offset = np.random.normal(0, 0.005)  # ~500m variation
-            lon_offset = np.random.normal(0, 0.005)
-            
-            station_lat = safe_location[0] + lat_offset
-            station_lon = safe_location[1] + lon_offset
-            
-            if self._is_valid_bay_area_location(station_lat, station_lon):
-                stations.append((station_lat, station_lon))
-            else:
-                # Use safe location as-is
-                stations.append(safe_location)
-        
-        return stations
-
-
-
-
-
-
-    def _select_charging_station(self, stations: List[Dict], vehicle: Dict, 
-                               is_emergency: bool) -> Dict:
-        """Select best charging station based on preferences"""
+    def _select_station_simple(self, stations: List[Dict], vehicle: Dict, is_emergency: bool) -> Optional[Dict]:
+        """Simple but realistic station selection focused on optimization"""
         
         if not stations:
-            return stations[0] if stations else {}
-        
-        # Filter available stations
-        available_stations = [s for s in stations if s['availability'] == 'Available']
-        if not available_stations:
-            available_stations = stations  # Use any station if none available
+            return None
         
         if is_emergency:
-            # Emergency: prioritize fast charging
-            fast_stations = [s for s in available_stations if s['max_power_kw'] >= 50]
+            # Emergency: prioritize fast charging and proximity
+            fast_stations = [s for s in stations if s.get('max_power_kw', 0) >= 50]
             if fast_stations:
-                return min(fast_stations, key=lambda x: x['distance_km'])
-        
-        # Normal selection: balance distance, cost, and charging speed
-        def station_score(station):
-            distance_score = 1 / (1 + station['distance_km'])  # Closer is better
-            cost_score = 1 / (1 + station['cost_usd_per_kwh'])  # Cheaper is better
-            power_score = station['max_power_kw'] / 250  # Higher power is better
+                # Choose closest fast charger
+                return min(fast_stations, key=lambda x: x.get('distance_km', 999))
+            else:
+                # No fast chargers, choose closest available
+                return min(stations, key=lambda x: x.get('distance_km', 999))
+        else:
+            # Normal charging: balance distance and cost
+            def simple_score(station):
+                distance_km = station.get('distance_km', 10)
+                cost_per_kwh = station.get('estimated_cost_per_kwh', 0.30)
+                
+                # Simple scoring: minimize distance + cost penalty
+                # Distance penalty: 1 point per km
+                # Cost penalty: 10 points per $0.10/kWh above $0.25
+                distance_penalty = distance_km
+                cost_penalty = max(0, (cost_per_kwh - 0.25) * 100)  # Penalty for expensive stations
+                
+                return distance_penalty + cost_penalty
             
-            return distance_score * 0.4 + cost_score * 0.3 + power_score * 0.3
-        
-        return max(available_stations, key=station_score)
-    
+            # Return station with lowest penalty score
+            return min(stations, key=simple_score)
+
+
+
+
 
 
     def generate_complete_dataset(self, num_days: int = 30) -> Dict[str, pd.DataFrame]:
-        """Generate complete synthetic EV fleet dataset"""
+        """Generate complete synthetic EV fleet dataset - SIMPLIFIED"""
         
-        logger.info(f"Generating complete dataset for {num_days} days...")
+        logger.info(f"🚀 Generating complete dataset for {num_days} days...")
         
         # Initialize data structures
         all_routes = []
@@ -1713,19 +1546,24 @@ class SyntheticEVGenerator:
         all_weather_data = []
         
         # Load road network ONCE at the beginning
-        logger.info("Loading road network...")
+        logger.info("📍 Loading road network...")
         self.network_db.load_or_create_network()
         
-        # Generate fleet vehicles
+        # Generate fleet vehicles (this will also create home charging stations)
         if not self.fleet_vehicles:
+            logger.info("🚗 Generating fleet vehicles...")
             self.generate_fleet_vehicles()
+        
+        # Log initial infrastructure status
+        logger.info("🏗️ Infrastructure status:")
+        self.log_infrastructure_status()
         
         # Generate data for each day
         start_date = datetime.strptime(self.config['fleet']['start_date'], '%Y-%m-%d')
         
         for day in range(num_days):
             current_date = start_date + timedelta(days=day)
-            logger.info(f"Generating data for day {day + 1}/{num_days}: {current_date.strftime('%Y-%m-%d')}")
+            logger.info(f"📅 Generating data for day {day + 1}/{num_days}: {current_date.strftime('%Y-%m-%d')}")
             
             # Generate weather for the day
             daily_weather = self._get_weather_conditions(current_date)
@@ -1733,46 +1571,67 @@ class SyntheticEVGenerator:
             all_weather_data.append(daily_weather)
             
             # Generate data for each vehicle
-            for vehicle in self.fleet_vehicles:
-                # Generate daily routes
-                daily_routes = self.generate_daily_routes(vehicle, current_date)
-                
-                # Filter out None routes and log statistics
-                valid_routes = [route for route in daily_routes if route is not None]
-                failed_routes = len(daily_routes) - len(valid_routes)
-                
-                if failed_routes > 0:
-                    logger.info(f"Vehicle {vehicle['vehicle_id']}: {len(valid_routes)} successful routes, {failed_routes} fallback routes")
-                
-                all_routes.extend(valid_routes)
-                
-                # Generate charging sessions
-                charging_sessions = self.generate_charging_sessions(
-                    vehicle, valid_routes, current_date
-                )
-                all_charging_sessions.extend(charging_sessions)
-                
-                # Track vehicle state
-                total_distance = sum(route['total_distance_km'] for route in valid_routes)
-                total_consumption = sum(
-                    route['consumption_data']['total_consumption_kwh'] 
-                    for route in valid_routes
-                )
-                
-                vehicle_state = {
-                    'vehicle_id': vehicle['vehicle_id'],
-                    'date': current_date.strftime('%Y-%m-%d'),
-                    'total_distance_km': round(total_distance, 2),
-                    'total_consumption_kwh': round(total_consumption, 3),
-                    'efficiency_kwh_per_100km': round(
-                        (total_consumption / total_distance * 100) if total_distance > 0 else 0, 2
-                    ),
-                    'num_trips': len(valid_routes),
-                    'num_charging_sessions': len(charging_sessions),
-                    'driver_profile': vehicle['driver_profile'],
-                    'vehicle_model': vehicle['model']
-                }
-                all_vehicle_states.append(vehicle_state)
+            for vehicle_idx, vehicle in enumerate(self.fleet_vehicles):
+                try:
+                    # Generate daily routes
+                    daily_routes = self.generate_daily_routes(vehicle, current_date)
+                    
+                    # Filter out None routes and log statistics
+                    valid_routes = [route for route in daily_routes if route is not None]
+                    failed_routes = len(daily_routes) - len(valid_routes)
+                    
+                    if failed_routes > 0:
+                        logger.debug(f"Vehicle {vehicle['vehicle_id']}: {len(valid_routes)} successful routes, {failed_routes} fallback routes")
+                    
+                    all_routes.extend(valid_routes)
+                    
+                    # Generate charging sessions
+                    charging_sessions = self.generate_charging_sessions(
+                        vehicle, valid_routes, current_date
+                    )
+                    
+                    # Simple validation - just check for required fields
+                    valid_charging_sessions = []
+                    for session in charging_sessions:
+                        if self._validate_charging_session_simple(session):
+                            valid_charging_sessions.append(session)
+                        else:
+                            logger.warning(f"Invalid charging session for {vehicle['vehicle_id']}: {session.get('session_id', 'unknown')}")
+                    
+                    all_charging_sessions.extend(valid_charging_sessions)
+                    
+                    # Track vehicle state
+                    total_distance = sum(route['total_distance_km'] for route in valid_routes)
+                    total_consumption = sum(
+                        route['consumption_data']['total_consumption_kwh'] 
+                        for route in valid_routes
+                    )
+                    
+                    vehicle_state = {
+                        'vehicle_id': vehicle['vehicle_id'],
+                        'date': current_date.strftime('%Y-%m-%d'),
+                        'total_distance_km': round(total_distance, 2),
+                        'total_consumption_kwh': round(total_consumption, 3),
+                        'efficiency_kwh_per_100km': round(
+                            (total_consumption / total_distance * 100) if total_distance > 0 else 0, 2
+                        ),
+                        'num_trips': len(valid_routes),
+                        'num_charging_sessions': len(valid_charging_sessions),
+                        'driver_profile': vehicle['driver_profile'],
+                        'vehicle_model': vehicle['model'],
+                        'has_home_charging': vehicle['has_home_charging']
+                    }
+                    all_vehicle_states.append(vehicle_state)
+                    
+                except Exception as e:
+                    logger.error(f"Error generating data for vehicle {vehicle['vehicle_id']} on {current_date}: {e}")
+                    continue
+            
+            # Log daily progress
+            if (day + 1) % 7 == 0 or day == num_days - 1:
+                logger.info(f"✅ Completed {day + 1}/{num_days} days")
+                logger.info(f"   Routes generated: {len(all_routes):,}")
+                logger.info(f"   Charging sessions: {len(all_charging_sessions):,}")
         
         # Convert to DataFrames
         datasets = {
@@ -1783,10 +1642,68 @@ class SyntheticEVGenerator:
             'fleet_info': pd.DataFrame(self.fleet_vehicles)
         }
         
-        logger.info("Dataset generation complete!")
+        # Add infrastructure datasets (simplified)
+        try:
+            infrastructure_datasets = self._create_infrastructure_datasets_simple()
+            datasets.update(infrastructure_datasets)
+        except Exception as e:
+            logger.warning(f"Could not create infrastructure datasets: {e}")
+        
+        logger.info("✅ Dataset generation complete!")
         self._print_dataset_summary(datasets)
         
         return datasets
+
+    def _validate_charging_session_simple(self, session: Dict) -> bool:
+        """Simple validation for charging session data"""
+        
+        required_fields = [
+            'session_id', 'vehicle_id', 'charging_type', 'start_time', 'end_time',
+            'start_soc', 'end_soc', 'energy_delivered_kwh', 'cost_usd'
+        ]
+        
+        # Check required fields exist and are not None
+        for field in required_fields:
+            if field not in session or session[field] is None:
+                return False
+        
+        # Basic range checks
+        try:
+            # SOC should be between 0 and 1
+            if not (0 <= session['start_soc'] <= 1 and 0 <= session['end_soc'] <= 1):
+                return False
+            
+            # End SOC should be greater than start SOC
+            if session['end_soc'] <= session['start_soc']:
+                return False
+            
+            # Energy and cost should be positive
+            if session['energy_delivered_kwh'] <= 0 or session['cost_usd'] < 0:
+                return False
+            
+            return True
+            
+        except Exception:
+            return False
+
+    def _create_infrastructure_datasets_simple(self) -> Dict[str, pd.DataFrame]:
+        """Create simplified infrastructure datasets"""
+        
+        infrastructure_datasets = {}
+        
+        try:
+            # Combined infrastructure
+            combined_stations = self.infrastructure_manager.get_combined_infrastructure()
+            if len(combined_stations) > 0:
+                infrastructure_datasets['charging_infrastructure'] = combined_stations
+            
+            logger.info(f"Created {len(infrastructure_datasets)} infrastructure datasets")
+            
+        except Exception as e:
+            logger.error(f"Error creating infrastructure datasets: {e}")
+        
+        return infrastructure_datasets
+
 
 
 
@@ -1971,6 +1888,8 @@ def main():
     # Initialize generator
     generator = SyntheticEVGenerator(config_override)
     
+    # Log infrastructure status
+    generator.log_infrastructure_status()
 
     # Check network status
     network_info = generator.network_db.get_network_info()
@@ -1986,6 +1905,16 @@ def main():
     print("Files created:")
     for name, filepath in saved_files.items():
         print(f"  {name}: {filepath}")
+
+    try:
+        infra_files = generator.infrastructure_manager.export_infrastructure_data(
+            generator.config['data_gen']['output_directory']
+        )
+        print(f"\nInfrastructure data:")
+        for name, filepath in infra_files.items():
+            print(f"  {name}: {filepath}")
+    except Exception as e:
+        logger.warning(f"Could not export infrastructure data: {e}")
 
 if __name__ == "__main__":
     main()
