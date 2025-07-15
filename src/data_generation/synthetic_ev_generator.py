@@ -516,8 +516,8 @@ class SyntheticEVGenerator:
         
         try:
             # Find nearest nodes in road network
-            origin_node = self._find_nearest_node(origin[0], origin[1])
-            dest_node = self._find_nearest_node(destination[0], destination[1])
+            origin_node = self.network_db._find_nearest_node(origin[0], origin[1])
+            dest_node = self.network_db._find_nearest_node(destination[0], destination[1])
             
             if origin_node is None or dest_node is None:
                 logger.error("Could not find nearest nodes")
