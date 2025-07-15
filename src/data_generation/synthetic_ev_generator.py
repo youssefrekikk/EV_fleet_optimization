@@ -63,7 +63,24 @@ class SyntheticEVGenerator:
 
         logger.info("🏗️ Initializing charging infrastructure...")
         self.infrastructure_manager = ChargingInfrastructureManager()
-
+        logger.info("🔧 Auto-building charging infrastructure...")
+        try:
+            # Build real stations database
+            real_stats = self.infrastructure_manager.build_real_stations_database(force_refresh=False)
+            logger.info(f"Real stations built: {real_stats}")
+            
+            # Build mock stations for gaps
+            mock_stats = self.infrastructure_manager.build_mock_stations_for_gaps(force_refresh=False)
+            logger.info(f"Mock stations built: {mock_stats}")
+            
+            # Get final stats
+            final_stats = self.infrastructure_manager.get_infrastructure_statistics()
+            logger.info(f"Infrastructure ready: {final_stats.get('total_stations', 0)} total stations")
+            
+        except Exception as e:
+            logger.error(f"Error building infrastructure: {e}")
+            logger.info("Continuing with limited infrastructure...")
+            
         self.charging_stations = []
         self.weather_data = []
         self.fleet_vehicles = []

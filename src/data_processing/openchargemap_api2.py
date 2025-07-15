@@ -34,13 +34,13 @@ class ChargingInfrastructureManager:
     4. Capacity and availability modeling
     """
     
-    def __init__(self, api_key: str = None, scenario: str = "current_reality"):
+    def __init__(self, api_key: str = None):
         self.api_key = api_key or os.getenv('OPENCHARGEMAP_API_KEY')
         
         # Use the single scenario configuration
         self.scenario_config = INFRASTRUCTURE_SCENARIOS
         self.scenario_name = self.scenario_config["name"]
-        
+        self.scenario = self.scenario_config
         # Set up data directory
         self.data_dir = DATA_PATHS['base_dir']
         os.makedirs(self.data_dir, exist_ok=True)
