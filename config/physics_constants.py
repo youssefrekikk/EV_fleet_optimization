@@ -6,8 +6,8 @@ PHYSICS_CONSTANTS = {
     'regen_efficiency': 0.7,            # 70% energy recovery on braking
     'motor_efficiency': 0.9,            # 90% motor efficiency
     'battery_efficiency': 0.95,         # 95% battery efficiency
-    'hvac_base_power': 2.0,            # kW base HVAC consumption
-    'auxiliary_power': 0.5,            # kW for lights, electronics, etc.
+    'hvac_base_power': 1,            # kW base HVAC consumption
+    'auxiliary_power': 0.25,            # kW for lights, electronics, etc.
     
     # New advanced physics constants
     'gas_constant': 8.314,             # J/(mol·K) - universal gas constant
@@ -22,7 +22,7 @@ PHYSICS_CONSTANTS = {
     'hvac_cop_resistive': 1.0,         # Resistive heating COP
     'cabin_thermal_mass': 50000,       # J/K (approximate cabin thermal mass)
     'cabin_heat_loss_coeff': 100,      # W/K (cabin heat loss coefficient)
-    'target_cabin_temp': 22.0,         # °C target cabin temperature
+    'target_cabin_temp': 21.0,         # °C target cabin temperature
     
     # Rolling resistance factors
     'rolling_resistance_speed_factor': 0.1,    # 10% increase per 100 km/h
