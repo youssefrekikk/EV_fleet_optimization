@@ -80,7 +80,7 @@ class SyntheticEVGenerator:
         except Exception as e:
             logger.error(f"Error building infrastructure: {e}")
             logger.info("Continuing with limited infrastructure...")
-            
+
         self.charging_stations = []
         self.weather_data = []
         self.fleet_vehicles = []
@@ -91,8 +91,8 @@ class SyntheticEVGenerator:
 
         
         # Initialize random seed for reproducibility and testing remove when generating final data
-        #np.random.seed(42)
-        #random.seed(42)
+        np.random.seed(42)
+        random.seed(42)
         
         logger.info("Synthetic EV Generator initialized")
     
@@ -262,24 +262,77 @@ class SyntheticEVGenerator:
 
 
     def _generate_home_location(self) -> Tuple[float, float]:
-        """Generate realistic home location"""
-        # Bias towards residential areas
-        residential_areas = [
-            'daly_city', 'hayward', 'fremont', 'mountain_view', 
-            'sunnyvale', 'santa_clara'
+        """Generate realistic home location on land (not in water bodies)"""
+        
+        max_attempts = 50  # Prevent infinite loops
+        
+        for attempt in range(max_attempts):
+            # Generate random location within Bay Area bounds
+            lat = np.random.uniform(
+                self.config['geography']['south'], 
+                self.config['geography']['north']
+            )
+            lon = np.random.uniform(
+                self.config['geography']['west'], 
+                self.config['geography']['east']
+            )
+            
+            # Check if location is on land (not in water)
+            if self._is_location_on_land(lat, lon):
+                return (lat, lon)
+        
+        # Fallback to known safe locations if all attempts fail
+        logger.warning("Could not find land location after 50 attempts, using fallback")
+        safe_locations = [
+            (37.7749, -122.4194),  # San Francisco
+            (37.3382, -122.0922),  # San Jose
+            (37.8044, -122.2712),  # Oakland
+            (37.4419, -122.1430),  # Palo Alto
+            (37.5630, -122.3255),  # San Mateo
+        ]
+        return safe_locations[np.random.randint(0, len(safe_locations))]
+
+    def _is_location_on_land(self, lat: float, lon: float) -> bool:
+        """Check if a location is on land (not in water bodies)"""
+        
+        # San Francisco Bay water body bounds (approximate)
+        bay_water_zones = [
+            # Main SF Bay
+            {
+                'lat_min': 37.45, 'lat_max': 37.85,
+                'lon_min': -122.35, 'lon_max': -122.05
+            },
+            # San Pablo Bay
+            {
+                'lat_min': 37.85, 'lat_max': 38.15,
+                'lon_min': -122.35, 'lon_max': -122.15
+            },
+            # South Bay water
+            {
+                'lat_min': 37.35, 'lat_max': 37.55,
+                'lon_min': -122.15, 'lon_max': -121.95
+            }
         ]
         
-        if np.random.random() < 0.7:  # 70% in residential areas
-            base_location = MAJOR_LOCATIONS[np.random.choice(residential_areas)]
-        else:
-            base_location = random.choice(list(MAJOR_LOCATIONS.values()))
+        # Check if location is in any water zone
+        for zone in bay_water_zones:
+            if (zone['lat_min'] <= lat <= zone['lat_max'] and 
+                zone['lon_min'] <= lon <= zone['lon_max']):
+                return False
         
-        # Add random offset (within ~5km)
-        lat_offset = np.random.normal(0, 0.02)
-        lon_offset = np.random.normal(0, 0.02)
+        # Check if too close to Pacific Ocean (west of certain longitude)
+        if lon < -122.5:  # Too far west = Pacific Ocean
+            return False
         
-        return (base_location[0] + lat_offset, base_location[1] + lon_offset)
-    
+        # Additional checks for known water areas
+        # Suisun Bay area
+        if (38.0 <= lat <= 38.2 and -122.1 <= lon <= -121.8):
+            return False
+        
+        # Assume location is on land if it passes all water checks
+        return True
+
+
 
     def _generate_trip_destination(self, origin: Tuple[float, float], target_distance: float, 
                               driver_profile: str, is_weekend: bool) -> Tuple[float, float]:
@@ -918,6 +971,13 @@ class SyntheticEVGenerator:
             logger.warning(f"Invalid GPS trace for {vehicle['vehicle_id']}: {len(gps_trace) if gps_trace else 0} points")
             return self._create_zero_consumption_result()
         
+        # 🔍 ADD THIS DEBUG CODE HERE - RIGHT AFTER VALIDATION
+        # Enable debugging for first few vehicles
+        if hasattr(self.energy_model, 'debug_mode'):
+            vehicle_num = int(vehicle['vehicle_id'].split('_')[1])
+            self.energy_model.debug_mode = (vehicle_num < 5)
+    
+
         # Get weather conditions for the day
         weather = self._get_weather_conditions(date)
         
@@ -1899,7 +1959,7 @@ def main():
     # Configuration override for testing
     config_override = {
         'fleet': {'fleet_size': 10},  # Smaller fleet for testing
-        'simulation': {'simulation_days': 7}  # One week of data
+        'simulation': {'simulation_days': 1}  # One week of data
     }
     
     # Initialize generator
@@ -1913,7 +1973,7 @@ def main():
     print(f"\n📊 Network Status: {network_info}")
 
     # Generate complete dataset
-    datasets = generator.generate_complete_dataset(num_days=7)
+    datasets = generator.generate_complete_dataset(num_days=1)
     
     # Save datasets
     saved_files = generator.save_datasets(datasets)

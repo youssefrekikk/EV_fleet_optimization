@@ -40,7 +40,7 @@ class ChargingInfrastructureManager:
         # Use the single scenario configuration
         self.scenario_config = INFRASTRUCTURE_SCENARIOS
         self.scenario_name = self.scenario_config["name"]
-        self.scenario = self.scenario_config
+        self.scenario = self.scenario_config["name"]
         # Set up data directory
         self.data_dir = DATA_PATHS['base_dir']
         os.makedirs(self.data_dir, exist_ok=True)
@@ -528,20 +528,13 @@ class ChargingInfrastructureManager:
             logger.warning("No mock stations generated")
             return {'total_mock_stations': 0, 'source': 'generation_failed'}
     
+
+
     def _generate_mock_station_for_gap(self, gap: Dict, station_idx: int) -> Dict:
-        """Generate a single mock station to fill a coverage gap"""
+        """Generate a single mock station to fill a coverage gap - WITH LAND VALIDATION"""
         try:
-            # Add some randomness to exact location (within 2km of gap center)
-            lat_offset = np.random.normal(0, 0.01)  # ~1km standard deviation
-            lon_offset = np.random.normal(0, 0.01)
-            
-            station_lat = gap['latitude'] + lat_offset
-            station_lon = gap['longitude'] + lon_offset
-            
-            # Ensure still in Bay Area
-            if not self._is_in_bay_area(station_lat, station_lon):
-                station_lat = gap['latitude']
-                station_lon = gap['longitude']
+            # Try to find a land location near the gap
+            station_lat, station_lon = self._find_land_location_near_gap(gap)
             
             # Select station type based on gap severity and location
             station_types = MOCK_STATION_CONFIG['mock_station_types']
@@ -566,7 +559,7 @@ class ChargingInfrastructureManager:
             operator = np.random.choice(MOCK_STATION_CONFIG['realistic_operators'])
             
             mock_station = {
-                'station_id': f"mock_{gap['latitude']:.3f}_{abs(gap['longitude']):.3f}_{station_idx}",
+                'station_id': f"mock_{int(gap['latitude']*1000)}_{int(abs(gap['longitude'])*1000)}_{station_idx}",
                 'data_source': 'MockGenerated',
                 'latitude': station_lat,
                 'longitude': station_lon,
@@ -582,7 +575,7 @@ class ChargingInfrastructureManager:
                 'access_type': 'Public',
                 'is_operational': True,
                 'status': 'Operational',
-                'station_type': station_type_key,
+                'station_type': 'mock',
                 'gap_severity': gap['gap_severity'],
                 'scenario': self.scenario,
                 'created_at': datetime.now().isoformat()
@@ -593,7 +586,108 @@ class ChargingInfrastructureManager:
         except Exception as e:
             logger.error(f"Error generating mock station: {e}")
             return None
-    
+
+    def _find_land_location_near_gap(self, gap: Dict) -> Tuple[float, float]:
+        """Find a land location near the coverage gap"""
+        
+        gap_lat = gap['latitude']
+        gap_lon = gap['longitude']
+        
+        # Try locations in expanding circles around the gap
+        search_radiuses = [0.01, 0.02, 0.05, 0.1]  # Degrees (roughly 1km, 2km, 5km, 10km)
+        
+        for radius in search_radiuses:
+            for attempt in range(20):  # 20 attempts per radius
+                # Generate random offset within radius
+                angle = np.random.uniform(0, 2 * np.pi)
+                distance = np.random.uniform(0, radius)
+                
+                lat_offset = distance * np.cos(angle)
+                lon_offset = distance * np.sin(angle)
+                
+                candidate_lat = gap_lat + lat_offset
+                candidate_lon = gap_lon + lon_offset
+                
+                # Check if still in Bay Area bounds
+                if not self._is_in_bay_area(candidate_lat, candidate_lon):
+                    continue
+                
+                # Check if on land
+                if self._is_location_on_land(candidate_lat, candidate_lon):
+                    return (candidate_lat, candidate_lon)
+        
+        # Fallback: use gap location but move it to nearest known land area
+        return self._move_to_nearest_land(gap_lat, gap_lon)
+
+    def _is_location_on_land(self, lat: float, lon: float) -> bool:
+        """Check if a location is on land (not in water bodies)"""
+        
+        # San Francisco Bay water body bounds (approximate)
+        bay_water_zones = [
+            # Main SF Bay
+            {
+                'lat_min': 37.45, 'lat_max': 37.85,
+                'lon_min': -122.35, 'lon_max': -122.05
+            },
+            # San Pablo Bay
+            {
+                'lat_min': 37.85, 'lat_max': 38.15,
+                'lon_min': -122.35, 'lon_max': -122.15
+            },
+            # South Bay water
+            {
+                'lat_min': 37.35, 'lat_max': 37.55,
+                'lon_min': -122.15, 'lon_max': -121.95
+            }
+        ]
+        
+        # Check if location is in any water zone
+        for zone in bay_water_zones:
+            if (zone['lat_min'] <= lat <= zone['lat_max'] and 
+                zone['lon_min'] <= lon <= zone['lon_max']):
+                return False
+        
+        # Check if too close to Pacific Ocean (west of certain longitude)
+        if lon < -122.5:  # Too far west = Pacific Ocean
+            return False
+        
+        # Additional checks for known water areas
+        # Suisun Bay area
+        if (38.0 <= lat <= 38.2 and -122.1 <= lon <= -121.8):
+            return False
+        
+        return True
+
+    def _move_to_nearest_land(self, lat: float, lon: float) -> Tuple[float, float]:
+        """Move a water location to the nearest land area"""
+        
+        # Known safe land locations in Bay Area
+        safe_locations = [
+            (37.7749, -122.4194),  # San Francisco
+            (37.3382, -122.0922),  # San Jose
+            (37.8044, -122.2712),  # Oakland
+            (37.4419, -122.1430),  # Palo Alto
+            (37.5630, -122.3255),  # San Mateo
+            (37.6688, -122.0808),  # Hayward
+            (37.8715, -122.2730),  # Berkeley
+        ]
+        
+        # Find closest safe location
+        min_distance = float('inf')
+        closest_location = safe_locations[0]
+        
+        for safe_lat, safe_lon in safe_locations:
+            distance = ((lat - safe_lat) ** 2 + (lon - safe_lon) ** 2) ** 0.5
+            if distance < min_distance:
+                min_distance = distance
+                closest_location = (safe_lat, safe_lon)
+        
+        return closest_location
+
+
+
+
+
     def _infer_charging_levels(self, power_kw: float) -> List[str]:
         """Infer charging levels from power rating"""
         if power_kw >= 150:
@@ -837,6 +931,15 @@ class ChargingInfrastructureManager:
             # Generate home station characteristics
             home_location = vehicle['home_location']
             
+            
+            home_lat, home_lon = home_location[0], home_location[1]
+            
+            # Validate home location is on land
+            if not self._is_location_on_land(home_lat, home_lon):
+                logger.warning(f"Home location for {vehicle['vehicle_id']} is in water, moving to land")
+                home_lat, home_lon = self._move_to_nearest_land(home_lat, home_lon)
+
+
             # Select power level based on distribution
             power_dist = HOME_CHARGING_CONFIG['power_distribution']
             power_options = list(power_dist.keys())
@@ -848,8 +951,8 @@ class ChargingInfrastructureManager:
                 'station_id': f"home_{vehicle['vehicle_id']}",
                 'vehicle_id': vehicle['vehicle_id'],
                 'data_source': 'HomeGenerated',
-                'latitude': home_location[0],
-                'longitude': home_location[1],
+                'latitude': home_lat,
+                'longitude': home_lon,
                 'operator': 'Home',
                 'max_power_kw': power_kw,
                 'min_power_kw': power_kw,
