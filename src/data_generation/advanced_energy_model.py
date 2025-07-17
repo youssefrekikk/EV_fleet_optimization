@@ -40,14 +40,56 @@ class AdvancedEVEnergyModel:
         self.ACTIVATION_ENERGY = self.constants['activation_energy']
         self.REFERENCE_TEMP = self.constants['reference_temp_k']
         self.TEMP_CAPACITY_ALPHA = self.constants['temp_capacity_alpha']
-        
+
+        self.debug_mode = True  # Enable detailed logging
+        self.segment_debug_count = 0
+        self.debug_file = None
+        self.detailed_log_file = None
+
+        # Create debug directory and files
+        os.makedirs("debug_logs", exist_ok=True)
+
+        # Create detailed efficiency log file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.detailed_log_file = f"debug_logs/efficiency_analysis_{timestamp}.log"
+
+        # Initialize detailed log file
+        with open(self.detailed_log_file, 'w') as f:
+            f.write("="*80 + "\n")
+            f.write("DETAILED EV EFFICIENCY ANALYSIS LOG\n")
+            f.write(f"Generated: {datetime.now().isoformat()}\n")
+            f.write("="*80 + "\n\n")
+            
+            # Log physics constants
+            f.write("PHYSICS CONSTANTS:\n")
+            f.write("-" * 40 + "\n")
+            for key, value in self.constants.items():
+                f.write(f"{key}: {value}\n")
+            f.write("\n")
+    
+    def _log_detailed(self, message: str, vehicle_id: str = "unknown"):
+        """Write detailed log message to file"""
+        if self.detailed_log_file:
+            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            with open(self.detailed_log_file, 'a') as f:
+                f.write(f"[{timestamp}] [{vehicle_id}] {message}\n")
+
+
+    
+
+
     def calculate_energy_consumption(self, gps_trace: List[Dict], vehicle: Dict, 
                                    weather_conditions: Dict) -> Dict:
         """
         Calculate energy consumption using advanced physics-based model
         """
-        
+        vehicle_id = vehicle.get('vehicle_id', 'unknown')
+        self._log_detailed(f"\n{'='*60}", vehicle_id)
+        self._log_detailed(f"STARTING ENERGY CALCULATION FOR {vehicle_id}", vehicle_id)
+        self._log_detailed(f"GPS trace points: {len(gps_trace) if gps_trace else 0}", vehicle_id)
+        self._log_detailed(f"Weather: {weather_conditions}", vehicle_id)
         if not gps_trace or len(gps_trace) < 2:
+            self._log_detailed("INSUFFICIENT GPS DATA - returning zero consumption", vehicle_id)
             return self._get_zero_consumption_result(weather_conditions)
         
         # Vehicle specifications
@@ -72,28 +114,72 @@ class AdvancedEVEnergyModel:
         battery_params = self._calculate_battery_parameters(ambient_temp_k, vehicle_specs)
         
         # Process each GPS segment
+        segment_count = 0
+        valid_segments = 0
+
         for i in range(len(gps_trace) - 1):
+            segment_count += 1
+
             try:
+                self._log_detailed(f"\n--- SEGMENT {segment_count} ---", vehicle_id)
                 segment_result = self._calculate_segment_consumption(
                     gps_trace[i], gps_trace[i + 1], 
                     vehicle_specs, battery_params, weather_conditions
                 )
                 
                 if segment_result['distance_km'] > 0:  # Only count valid segments
+                    valid_segments += 1
                     total_consumption += segment_result['energy_kwh']
                     total_distance += segment_result['distance_km']
                     
                     # Update breakdown
                     for component, value in segment_result['breakdown'].items():
                         consumption_breakdown[component] += value
-                        
+                    self._log_detailed(f"Segment {segment_count}: {segment_result['distance_km']:.3f}km, "
+                                    f"{segment_result['energy_kwh']:.4f}kWh, "
+                                    f"efficiency: {(segment_result['energy_kwh']/segment_result['distance_km']*100):.2f}kWh/100km", 
+                                    vehicle_id)
+                else:
+                    self._log_detailed(f"Segment {segment_count}: INVALID (distance=0)", vehicle_id) 
             except Exception as e:
                 logger.debug(f"Segment calculation error: {e}")
+                self._log_detailed(f"Segment {segment_count} ERROR: {e}", vehicle_id)
+        
                 continue
+        self._log_detailed(f"\nSEGMENT PROCESSING COMPLETE:", vehicle_id)
+        self._log_detailed(f"Total segments: {segment_count}, Valid: {valid_segments}", vehicle_id)
+        self._log_detailed(f"Total distance: {total_distance:.3f}km", vehicle_id)
+        self._log_detailed(f"Total consumption: {total_consumption:.4f}kWh", vehicle_id)
         
         # Calculate final metrics
         efficiency_kwh_per_100km = (total_consumption / total_distance * 100) if total_distance > 0 else 0
+
+        self._log_detailed(f"Raw efficiency: {efficiency_kwh_per_100km:.2f}kWh/100km", vehicle_id)
+
+        # Log consumption breakdown
+        self._log_detailed(f"\nCONSUMPTION BREAKDOWN:", vehicle_id)
+        for component, value in consumption_breakdown.items():
+            percentage = (value / total_consumption * 100) if total_consumption > 0 else 0
+            self._log_detailed(f"  {component}: {value:.4f}kWh ({percentage:.1f}%)", vehicle_id)
+
+
+        # 🔧 FIX: Cap unrealistic efficiency
+        """
+        if efficiency_kwh_per_100km > 45:  # Cap at 45 kWh/100km
+            logger.warning(f"Capping unrealistic efficiency: {efficiency_kwh_per_100km:.2f} -> 45.0 kWh/100km")
+            efficiency_kwh_per_100km = 45.0
+            total_consumption = (efficiency_kwh_per_100km / 100) * total_distance
+
+
+        """
+        if efficiency_kwh_per_100km > 30:  # Log unrealistic efficiency
+            self._log_detailed(f"⚠️ HIGH EFFICIENCY DETECTED: {efficiency_kwh_per_100km:.1f}kWh/100km", vehicle_id)
+            self._log_detailed(f"Distance: {total_distance:.2f}km", vehicle_id)
+            self._log_detailed(f"HVAC: {consumption_breakdown.get('hvac', 0):.3f}kWh", vehicle_id)
+            self._log_detailed(f"Aux: {consumption_breakdown.get('auxiliary', 0):.3f}kWh", vehicle_id)
+            self._log_detailed(f"Rolling: {consumption_breakdown.get('rolling_resistance', 0):.3f}kWh", vehicle_id)
         
+
         # Apply minimum realistic consumption (prevent zero consumption)
         if total_distance > 0 and total_consumption < 0.05:
             # Minimum consumption based on vehicle weight and distance
@@ -101,7 +187,8 @@ class AdvancedEVEnergyModel:
             total_consumption = max(total_consumption, min_consumption)
             efficiency_kwh_per_100km = total_consumption / total_distance * 100
         
-        return {
+
+        final_result = {
             'total_consumption_kwh': round(total_consumption, 3),
             'total_distance_km': round(total_distance, 2),
             'efficiency_kwh_per_100km': round(efficiency_kwh_per_100km, 2),
@@ -112,6 +199,11 @@ class AdvancedEVEnergyModel:
             'weather_conditions': weather_conditions,
             'model_version': 'advanced_physics_v1.0'
         }
+
+        self._log_detailed(f"\nFINAL RESULT: {final_result}", vehicle_id)
+        self._log_detailed(f"{'='*60}\n", vehicle_id)
+
+        return final_result
     
     def _calculate_battery_parameters(self, temp_k: float, vehicle_specs: Dict) -> Dict:
         """Calculate temperature-dependent battery parameters"""
@@ -136,7 +228,7 @@ class AdvancedEVEnergyModel:
     
     def _calculate_segment_consumption(self, point1: Dict, point2: Dict, 
                                      vehicle_specs: Dict, battery_params: Dict,
-                                     weather: Dict) -> Dict:
+                                     weather: Dict,vehicle_id: str = "unknown") -> Dict:
         """Calculate energy consumption for a single GPS segment"""
         
         # Calculate segment distance and validate
@@ -144,9 +236,32 @@ class AdvancedEVEnergyModel:
             (point1['latitude'], point1['longitude']),
             (point2['latitude'], point2['longitude'])
         ).meters
-        
-        if distance_m < 0.1:  # Skip segments shorter than 10cm
-            return {'distance_km': 0, 'energy_kwh': 0, 'breakdown': {k: 0 for k in ['rolling_resistance', 'aerodynamic_drag', 'elevation_change', 'acceleration', 'hvac', 'auxiliary', 'regenerative_braking', 'battery_thermal_loss']}}
+        self._log_detailed(f"Segment distance: {distance_m:.1f}m", vehicle_id)
+
+        if distance_m < 30:  # Use simplified calculation for short segments
+            distance_km = distance_m / 1000
+            self._log_detailed(f"SHORT SEGMENT (<30m) - using simplified calculation", vehicle_id)
+            # Simple energy: rolling resistance + minimal auxiliary
+            rolling_force = self.ROLLING_RESISTANCE_BASE * vehicle_specs['mass'] * self.GRAVITY
+            rolling_energy_kwh = (rolling_force * distance_m) / 3.6e6 / 0.85  # Include drivetrain efficiency
+            
+            # Minimal auxiliary for short time
+            aux_energy_kwh = (vehicle_specs['auxiliary_power'] * 0.2 * time_diff_s) / 3600  # 20% aux load
+            
+            total_simple_energy = rolling_energy_kwh + aux_energy_kwh
+            self._log_detailed(f"Short segment: rolling={rolling_energy_kwh:.4f}kWh,aux={aux_energy_kwh:.4f}kWh, total={total_simple_energy:.4f}kWh", vehicle_id)
+            return {
+            'distance_km': distance_km, 'energy_kwh': total_simple_energy, 'breakdown': {
+            'rolling_resistance': rolling_energy_kwh,
+            'aerodynamic_drag': 0,
+            'elevation_change': 0,
+            'acceleration': 0,
+            'hvac': 0,
+            'auxiliary': aux_energy_kwh,
+            'regenerative_braking': 0,
+            'battery_thermal_loss': 0
+            }
+        }
         
         # Calculate time difference and validate
         try:
@@ -170,12 +285,18 @@ class AdvancedEVEnergyModel:
         elevation1 = point1.get('elevation_m', 0)
         elevation2 = point2.get('elevation_m', 0)
         elevation_change = elevation2 - elevation1
+        # Add after vehicle dynamics calculations
+        self._log_detailed(f"Speed1: {speed1_ms:.1f}m/s, Speed2: {speed2_ms:.1f}m/s, Avg: {avg_speed_ms:.1f}m/s", vehicle_id)
+        self._log_detailed(f"Acceleration: {acceleration:.2f}m/s²", vehicle_id)
+        self._log_detailed(f"Elevation change: {elevation_change:.1f}m", vehicle_id)
+
         
         # Physics-based force calculations
         forces = self._calculate_driving_forces(
             avg_speed_ms, acceleration, elevation_change, distance_m,
             vehicle_specs, weather
         )
+        self._log_detailed(f"Forces - Rolling: {forces['rolling']:.1f}N, Aero: {forces['aero']:.1f}N, Elevation: {forces['elevation']:.1f}N", vehicle_id)
         
         # Energy calculations (in Joules)
         energy_breakdown = {}
@@ -202,16 +323,18 @@ class AdvancedEVEnergyModel:
         # 5. HVAC energy
         hvac_power_w = self._calculate_hvac_power(weather['temperature'], vehicle_specs)
         energy_breakdown['hvac'] = hvac_power_w * time_diff_s
-        
+        self._log_detailed(f"HVAC power: {hvac_power_w:.1f}W for {time_diff_s:.1f}s = {hvac_power_w * time_diff_s / 3.6e6:.4f}kWh", vehicle_id)
         # 6. Auxiliary systems energy
-        aux_power_w = vehicle_specs['auxiliary_power'] * 1000  # Convert kW to W
+        aux_power_w = vehicle_specs['auxiliary_power'] * 1000 * 0.5  # Convert kW to W
         energy_breakdown['auxiliary'] = aux_power_w * time_diff_s
         
         # 7. Battery thermal losses (I²R losses)
         current_estimate = self._estimate_battery_current(forces, avg_speed_ms, vehicle_specs)
         thermal_loss_w = current_estimate**2 * battery_params['internal_resistance']
         energy_breakdown['battery_thermal_loss'] = thermal_loss_w * time_diff_s
-        
+        self._log_detailed(f"Energy breakdown (J):", vehicle_id)
+        for component, energy_j in energy_breakdown.items():
+            self._log_detailed(f"  {component}: {energy_j:.1f}J ({energy_j/3.6e6:.4f}kWh)", vehicle_id)
         # Sum total energy and apply efficiency factors
         total_mechanical_energy = (
             energy_breakdown['rolling_resistance'] +
@@ -233,7 +356,7 @@ class AdvancedEVEnergyModel:
                             self.constants['transmission_efficiency'])
 
         
-        mechanical_energy_kwh = total_mechanical_energy / 3.6e6 / drivetrain_efficiency
+        mechanical_energy_kwh = (total_mechanical_energy / 3.6e6) / drivetrain_efficiency
         auxiliary_energy_kwh = total_auxiliary_energy / 3.6e6
         
         # Subtract regenerative braking energy
@@ -242,19 +365,25 @@ class AdvancedEVEnergyModel:
         # Apply temperature efficiency factor
         temp_factor = battery_params['temp_efficiency_factor']
         
-        total_energy_kwh = (mechanical_energy_kwh + auxiliary_energy_kwh - regen_energy_kwh) / temp_factor
+        if temp_factor < 1.0:
+            # Cold weather - higher consumption
+            total_energy_kwh = (mechanical_energy_kwh + auxiliary_energy_kwh - regen_energy_kwh) / temp_factor
+        else:
+            # Normal/warm weather
+            total_energy_kwh = (mechanical_energy_kwh + auxiliary_energy_kwh - regen_energy_kwh)
         
         # Ensure minimum positive consumption
         total_energy_kwh = max(0.001, total_energy_kwh)  # Minimum 1 Wh
         
         # Convert breakdown to kWh
         breakdown_kwh = {k: v / 3.6e6 for k, v in energy_breakdown.items()}
-        
-        return {
+         # 🔍 DEBUG: Add detailed logging before return
+        segment_result = {
             'distance_km': distance_m / 1000,
             'energy_kwh': total_energy_kwh,
             'breakdown': breakdown_kwh
         }
+        return segment_result
     
     def _calculate_driving_forces(self, speed_ms: float, acceleration: float, 
                                 elevation_change: float, distance_m: float,
@@ -327,32 +456,30 @@ class AdvancedEVEnergyModel:
 
     
     def _calculate_hvac_power(self, temp_c: float, vehicle_specs: Dict) -> float:
-        """Calculate HVAC power consumption based on temperature"""
-        
         target_temp = self.constants['target_cabin_temp']
         temp_diff = abs(temp_c - target_temp)
         
-        if temp_diff <= 2:
-            # Minimal HVAC usage
-            return vehicle_specs.get('hvac_base_power', self.constants['hvac_base_power']) * 1000 * 0.2
-        
-        # Determine heating vs cooling
+        if temp_diff <= 3:  # Increased comfort zone
+            # Minimal HVAC usage - just fan
+            return 150  # 150W for ventilation fan only
+    
+        # Determine heating vs cooling with realistic power levels
         if temp_c < target_temp:
-            # Heating mode
+            # Heating mode - heat pump efficiency considered
             if vehicle_specs.get('has_heat_pump', True):
-                # Heat pump efficiency
-                cop = max(1.5, self.constants['hvac_cop_heat_pump'] - (target_temp - temp_c) * 0.1)
-                heating_load = self._calculate_heating_load(temp_diff, vehicle_specs)
-                return heating_load / cop
+                base_load = 400  # Heat pump: 400W base
+                load_factor = min(1.8, 1 + temp_diff * 0.05)  # Gradual increase
             else:
-                # Resistive heating
-                heating_load = self._calculate_heating_load(temp_diff, vehicle_specs)
-                return heating_load / self.constants['hvac_cop_resistive']
+                base_load = 600  # Resistive heating: 600W base
+                load_factor = min(2.2, 1 + temp_diff * 0.08)
         else:
-            # Cooling mode
-            cooling_load = self._calculate_cooling_load(temp_diff, vehicle_specs)
-            cop_cooling = max(2.0, 3.5 - (temp_c - target_temp) * 0.05)
-            return cooling_load / cop_cooling
+            # Cooling mode - A/C compressor
+            base_load = 500  # 500W base for A/C
+            load_factor = min(2.0, 1 + temp_diff * 0.06)  # Gradual increase
+        
+        size_factor = vehicle_specs.get('mass', 1800) / 1800
+        return base_load * load_factor * size_factor
+
 
 
     def _calculate_heating_load(self, temp_diff: float, vehicle_specs: Dict) -> float:
