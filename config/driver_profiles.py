@@ -9,7 +9,7 @@ DRIVER_PROFILES = {
         'charging_threshold': 0.3,       # charge when battery < 30%
         'driving_style': 'normal',
         'weekend_factor': 0.3,
-        'proportion': 0.4
+        'proportion': 0.35
     },
     'rideshare': {
         'daily_km': (240, 480),          # km per day
@@ -45,6 +45,6 @@ DRIVER_PROFILES = {
         'charging_threshold': 0.4,
         'driving_style': 'eco',
         'weekend_factor': 1.5,
-        'proportion': 0.15
+        'proportion': 0.2
     }
 }
