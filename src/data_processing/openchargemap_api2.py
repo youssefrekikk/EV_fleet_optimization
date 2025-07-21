@@ -1449,7 +1449,7 @@ class ChargingInfrastructureManager:
                 exported_files['combined_infrastructure'] = combined_file
             
             # Export real stations if available
-            real_stations = self.get_real_stations()
+            real_stations = self.load_real_stations()
             if len(real_stations) > 0:
                 real_file = os.path.join(output_dir, 'real_charging_stations.csv')
                 real_stations.to_csv(real_file, index=False)
