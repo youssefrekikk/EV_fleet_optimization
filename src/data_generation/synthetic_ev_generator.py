@@ -5,29 +5,32 @@ Creates realistic GPS traces, consumption patterns, and charging behavior
 
 import numpy as np
 import pandas as pd
-import osmnx as ox
 import networkx as nx
 from datetime import datetime, timedelta
-import random
 from typing import Dict, List, Tuple, Optional
 import json
 import os
 from geopy.distance import geodesic
-import logging
+from scipy.signal import savgol_filter
 
 # Import our configurations
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from config.ev_config import *
+from config.logging_config import *
 from src.data_processing.openchargemap_api2 import ChargingInfrastructureManager
 from dotenv import load_dotenv
 from src.data_generation.road_network_db import NetworkDatabase
 from src.data_generation.advanced_energy_model import AdvancedEVEnergyModel
+from src.utils.logger import setup_logger, get_logger, info, warning, error, debug, print_summary, log_route_failure
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 load_dotenv()
+
+# Initialize logger with current configuration
+logger_config = get_logging_config()
+logger = setup_logger(**logger_config)
+
 # Key locations in Bay Area for route generation
 
 
@@ -61,28 +64,26 @@ class SyntheticEVGenerator:
         """Initialize the synthetic EV data generator"""
         self.config = self._merge_config(config_override)
 
-        logger.info("🏗️ Initializing charging infrastructure...")
+        info("🏗️ Initializing charging infrastructure...", "synthetic_ev_generator")
         self.infrastructure_manager = ChargingInfrastructureManager()
-        logger.info("🔧 Auto-building charging infrastructure...")
+        info("🔧 Auto-building charging infrastructure...", "synthetic_ev_generator")
         try:
             # Build real stations database
             real_stats = self.infrastructure_manager.build_real_stations_database(force_refresh=False)
-            logger.info(f"Real stations built: {real_stats}")
+            info(f"Real stations built: {real_stats}", "synthetic_ev_generator")
             
             # Build mock stations for gaps
             mock_stats = self.infrastructure_manager.build_mock_stations_for_gaps(force_refresh=False)
-            logger.info(f"Mock stations built: {mock_stats}")
+            info(f"Mock stations built: {mock_stats}", "synthetic_ev_generator")
             
             # Get final stats
             final_stats = self.infrastructure_manager.get_infrastructure_statistics()
-            logger.info(f"Infrastructure ready: {final_stats.get('total_stations', 0)} total stations")
+            info(f"Infrastructure ready: {final_stats.get('total_stations', 0)} total stations", "synthetic_ev_generator")
             
         except Exception as e:
-            logger.error(f"Error building infrastructure: {e}")
-            logger.info("Continuing with limited infrastructure...")
+            error(f"Error building infrastructure: {e}", "synthetic_ev_generator")
+            info("Continuing with limited infrastructure...", "synthetic_ev_generator")
 
-        self.charging_stations = []
-        self.weather_data = []
         self.fleet_vehicles = []
 
         self.network_db = NetworkDatabase()
@@ -92,10 +93,8 @@ class SyntheticEVGenerator:
         
         # Initialize random seed for reproducibility and testing remove when generating final data
         np.random.seed(42)
-        random.seed(42)
         
-        logger.info("Synthetic EV Generator initialized")
-    
+        info("Synthetic EV Generator initialized", "synthetic_ev_generator")
 
     def _merge_config(self, override: Optional[Dict]) -> Dict:
         """Merge configuration with overrides"""
@@ -118,20 +117,10 @@ class SyntheticEVGenerator:
                     base_config[key] = value
         
         return base_config
-    
-
-
-
-
-
-
-
-    
-
 
     def generate_fleet_vehicles(self) -> List[Dict]:
         """Generate fleet of vehicles with realistic characteristics"""
-        logger.info("Generating fleet vehicles...")
+        info("Generating fleet vehicles...", "synthetic_ev_generator")
         
         fleet_size = self.config['fleet']['fleet_size']
         vehicles = []
@@ -179,14 +168,14 @@ class SyntheticEVGenerator:
             vehicles.append(vehicle)
         
         self.fleet_vehicles = vehicles
-        logger.info(f"Generated {len(vehicles)} fleet vehicles")
-        logger.info(f"Home charging enabled: {home_charging_enabled}")
-        logger.info(f"Vehicles with home charging: {sum(1 for v in vehicles if v['has_home_charging'])}")
+        info(f"Generated {len(vehicles)} fleet vehicles", "synthetic_ev_generator")
+        info(f"Home charging enabled: {home_charging_enabled}", "synthetic_ev_generator")
+        info(f"Vehicles with home charging: {sum(1 for v in vehicles if v['has_home_charging'])}", "synthetic_ev_generator")
         # NEW: Generate home charging stations for the fleet
         if home_charging_enabled:
-            logger.info("🏠 Setting up home charging infrastructure...")
+            info("🏠 Setting up home charging infrastructure...", "synthetic_ev_generator")
             home_stations = self.infrastructure_manager.generate_home_stations_for_fleet(vehicles)
-            logger.info(f"✅ Generated {len(home_stations)} home charging stations")
+            info(f"✅ Generated {len(home_stations)} home charging stations", "synthetic_ev_generator")
         return vehicles
 
     def _generate_realistic_starting_soc(self, driver_profile: str, has_home_charging: bool) -> float:
@@ -282,7 +271,7 @@ class SyntheticEVGenerator:
                 return (lat, lon)
         
         # Fallback to known safe locations if all attempts fail
-        logger.warning("Could not find land location after 50 attempts, using fallback")
+        warning("Could not find land location after 50 attempts, using fallback", "synthetic_ev_generator")
         safe_locations = [
             (37.7749, -122.4194),  # San Francisco
             (37.3382, -122.0922),  # San Jose
@@ -532,33 +521,6 @@ class SyntheticEVGenerator:
 
 
 
-    def _get_random_destination_within_distance(self, origin: Tuple[float, float], 
-                                              target_distance: float) -> Tuple[float, float]:
-        """Generate random destination within target distance"""
-        # Convert distance to approximate lat/lon degrees
-        # Rough approximation: 1 degree ≈ 111 km
-        max_offset = target_distance / 111.0
-        
-        # Generate random direction and distance
-        angle = np.random.uniform(0, 2 * np.pi)
-        distance_factor = np.random.uniform(0.7, 1.3)  # 70-130% of target distance
-        actual_offset = (target_distance * distance_factor) / 111.0
-        
-        lat_offset = actual_offset * np.cos(angle)
-        lon_offset = actual_offset * np.sin(angle)
-        
-        destination = (origin[0] + lat_offset, origin[1] + lon_offset)
-        
-        # Ensure destination is within geographic bounds
-        bounds = self.config['geography']
-        destination = (
-            np.clip(destination[0], bounds['south'], bounds['north']),
-            np.clip(destination[1], bounds['west'], bounds['east'])
-        )
-        
-        return destination
-    
-
 
     def _generate_route_with_timing(self, origin: Tuple[float, float], destination: Tuple[float, float],
                                vehicle: Dict, start_time: datetime, trip_id: int) -> Dict:
@@ -566,12 +528,12 @@ class SyntheticEVGenerator:
         
         # Ensure road network is loaded
         if self.network_db.network is None:
-            logger.warning("Road network not loaded. Loading now...")
+            warning("Road network not loaded. Loading now...", "synthetic_ev_generator")
             self.network_db.load_or_create_network()
         
         # Double check that we have a network
         if self.network_db.network is None:
-            logger.error("Failed to load any road network")
+            error("Failed to load any road network", "synthetic_ev_generator")
             return None
         
         try:
@@ -580,7 +542,8 @@ class SyntheticEVGenerator:
             dest_node = self.network_db._find_nearest_node(destination[0], destination[1])
             
             if origin_node is None or dest_node is None:
-                logger.error("Could not find nearest nodes")
+                error("Could not find nearest nodes", "synthetic_ev_generator")
+                log_route_failure(origin, destination, origin_node, dest_node, self.network_db.network, "No nearest node found", vehicle_id=vehicle['vehicle_id'])
                 return self._generate_fallback_route_with_timing(origin, destination, vehicle, start_time, trip_id)
             
             # Calculate shortest path
@@ -589,12 +552,14 @@ class SyntheticEVGenerator:
                     self.network_db.network, origin_node, dest_node, weight='travel_time'
                 )
             except nx.NetworkXNoPath:
-                logger.warning(f"No path found between {origin} and {destination}")
+                warning(f"No path found between {origin} and {destination}", "synthetic_ev_generator")
+                log_route_failure(origin, destination, origin_node, dest_node, self.network_db.network, "No path with weight", vehicle_id=vehicle['vehicle_id'])
                 # Try without weight
                 try:
                     path = nx.shortest_path(self.network_db.network, origin_node, dest_node)
                 except nx.NetworkXNoPath:
-                    logger.warning("No path found even without weight - using fallback")
+                    warning("No path found even without weight - using fallback", "synthetic_ev_generator")
+                    log_route_failure(origin, destination, origin_node, dest_node, self.network_db.network, "No path without weight", vehicle_id=vehicle['vehicle_id'])
                     return self._generate_fallback_route_with_timing(origin, destination, vehicle, start_time, trip_id)
             
             # Extract route details
@@ -670,7 +635,7 @@ class SyntheticEVGenerator:
             return route_data
             
         except Exception as e:
-            logger.error(f"Error generating route: {e}")
+            error(f"Error generating route: {e}", "synthetic_ev_generator")
             return self._generate_fallback_route_with_timing(origin, destination, vehicle, start_time, trip_id)
 
 
@@ -687,7 +652,21 @@ class SyntheticEVGenerator:
             elevation = self._generate_realistic_bay_area_elevation(lat, lon)
             elevations.append(elevation)
         
-        return elevations
+        # --- SMOOTHING: Apply Savitzky-Golay filter for realistic elevation profile ---
+        if len(elevations) >= 5:
+            # window_length must be odd and <= len(elevations)
+            window_length = min(11, len(elevations) if len(elevations) % 2 == 1 else len(elevations)-1)
+            if window_length < 5:
+                window_length = 5 if len(elevations) >= 5 else len(elevations) | 1
+            polyorder = 2 if window_length > 2 else 1
+            try:
+                smoothed = savgol_filter(elevations, window_length=window_length, polyorder=polyorder, mode='nearest')
+                return smoothed.tolist()
+            except Exception as e:
+                warning(f"Smoothing failed: {e}, returning raw elevations.", "synthetic_ev_generator")
+                return elevations
+        else:
+            return elevations
 
     def _generate_realistic_bay_area_elevation(self, lat: float, lon: float) -> float:
         """Generate realistic elevation based on Bay Area geography"""
@@ -865,10 +844,56 @@ class SyntheticEVGenerator:
                                                 total_time_minutes: float) -> List[Dict]:
         """Generate simplified GPS trace for fallback routes with proper timing"""
         
-        # Number of GPS points (roughly every 30 seconds for better energy calculation)
+        # Calculate straight-line distance
         distance_km = geodesic(origin, destination).kilometers
+        
+        # FIX: Handle cases where origin and destination are too close or identical
+        if distance_km < 0.001:  # Less than 1 meter
+            warning(f"Origin and destination too close ({distance_km:.6f} km) - generating minimal trace", "synthetic_ev_generator")
+            # Generate a minimal trace with at least 2 points
+            gps_trace = []
+            current_time = start_time
+            
+            # Add origin point
+            gps_trace.append({
+                'timestamp': current_time.isoformat(),
+                'latitude': origin[0],
+                'longitude': origin[1],
+                'speed_kmh': 0.0,
+                'elevation_m': 50.0,
+                'heading': 0.0,
+                'accuracy_m': 3.0
+            })
+            
+            # Add destination point (slightly offset if identical)
+            if distance_km == 0:
+                # If identical, add small offset to destination
+                dest_lat = destination[0] + 0.000001
+                dest_lon = destination[1] + 0.000001
+            else:
+                dest_lat = destination[0]
+                dest_lon = destination[1]
+            
+            current_time += timedelta(seconds=30)  # 30 second gap
+            gps_trace.append({
+                'timestamp': current_time.isoformat(),
+                'latitude': dest_lat,
+                'longitude': dest_lon,
+                'speed_kmh': 0.0,
+                'elevation_m': 50.0,
+                'heading': 0.0,
+                'accuracy_m': 3.0
+            })
+            
+            return gps_trace
+        
+        # Number of GPS points (roughly every 30 seconds for better energy calculation)
         travel_time_hours = total_time_minutes / 60
         num_points = max(10, int(travel_time_hours * 120))  # 2 points per minute, minimum 10
+        
+        # FIX: Ensure minimum number of points for very short distances
+        if distance_km < 0.1:  # Less than 100 meters
+            num_points = max(5, num_points)  # At least 5 points for short distances
         
         gps_trace = []
         current_time = start_time
@@ -920,6 +945,21 @@ class SyntheticEVGenerator:
                 time_increment = (total_time_minutes * 60) / (num_points - 1)
                 current_time += timedelta(seconds=time_increment)
         
+        # FIX: Final validation - ensure we have at least 2 points
+        if len(gps_trace) < 2:
+            warning(f"Generated GPS trace has only {len(gps_trace)} points - adding fallback points", "synthetic_ev_generator")
+            # Add a second point if we only have one
+            if len(gps_trace) == 1:
+                gps_trace.append({
+                    'timestamp': (start_time + timedelta(seconds=30)).isoformat(),
+                    'latitude': destination[0],
+                    'longitude': destination[1],
+                    'speed_kmh': 0.0,
+                    'elevation_m': 50.0,
+                    'heading': 0.0,
+                    'accuracy_m': 3.0
+                })
+        
         return gps_trace
 
 
@@ -968,7 +1008,7 @@ class SyntheticEVGenerator:
         
         # Validate GPS trace
         if not gps_trace or len(gps_trace) < 2:
-            logger.warning(f"Invalid GPS trace for {vehicle['vehicle_id']}: {len(gps_trace) if gps_trace else 0} points")
+            warning(f"Invalid GPS trace for {vehicle['vehicle_id']}: {len(gps_trace) if gps_trace else 0} points", "synthetic_ev_generator")
             return self._create_zero_consumption_result()
         
         # 🔍 ADD THIS DEBUG CODE HERE - RIGHT AFTER VALIDATION
@@ -991,8 +1031,8 @@ class SyntheticEVGenerator:
             if (consumption_result['total_consumption_kwh'] == 0 and 
                 consumption_result['total_distance_km'] > 0):
                 
-                logger.warning(f"Zero consumption detected for {vehicle['vehicle_id']} "
-                            f"with {consumption_result['total_distance_km']:.2f}km distance - using fallback")
+                warning(f"Zero consumption detected for {vehicle['vehicle_id']} "
+                       f"with {consumption_result['total_distance_km']:.2f}km distance - using fallback", "synthetic_ev_generator")
                 
                 # Use fallback calculation
                 fallback_consumption = self._calculate_fallback_consumption_simple(
@@ -1018,7 +1058,7 @@ class SyntheticEVGenerator:
             return consumption_result
             
         except Exception as e:
-            logger.error(f"Energy model failed for {vehicle['vehicle_id']}: {e}")
+            error(f"Energy model failed for {vehicle['vehicle_id']}: {e}", "synthetic_ev_generator")
             
             # Calculate distance from GPS trace
             total_distance = 0
@@ -1159,25 +1199,25 @@ class SyntheticEVGenerator:
             # Get infrastructure statistics
             stats = self.infrastructure_manager.get_infrastructure_statistics()
             
-            logger.info("🏗️ INFRASTRUCTURE STATUS:")
-            logger.info(f"  Total stations: {stats.get('total_stations', 0)}")
-            logger.info(f"  Real stations: {stats.get('real_stations', 0)}")
-            logger.info(f"  Mock stations: {stats.get('mock_stations', 0)}")
-            logger.info(f"  Home stations: {stats.get('home_stations', 0)}")
-            logger.info(f"  Available ports: {stats.get('available_ports', 0)}")
-            logger.info(f"  Total capacity: {stats.get('total_capacity', 0)}")
-            logger.info(f"  Utilization rate: {stats.get('utilization_rate', 0):.1%}")
+            info("🏗️ INFRASTRUCTURE STATUS:", "synthetic_ev_generator")
+            info(f"  Total stations: {stats.get('total_stations', 0)}", "synthetic_ev_generator")
+            info(f"  Real stations: {stats.get('real_stations', 0)}", "synthetic_ev_generator")
+            info(f"  Mock stations: {stats.get('mock_stations', 0)}", "synthetic_ev_generator")
+            info(f"  Home stations: {stats.get('home_stations', 0)}", "synthetic_ev_generator")
+            info(f"  Available ports: {stats.get('available_ports', 0)}", "synthetic_ev_generator")
+            info(f"  Total capacity: {stats.get('total_capacity', 0)}", "synthetic_ev_generator")
+            info(f"  Utilization rate: {stats.get('utilization_rate', 0):.1%}", "synthetic_ev_generator")
             
             # Check for potential issues
             if stats.get('total_stations', 0) == 0:
-                logger.warning("⚠️ No charging stations available!")
+                warning("⚠️ No charging stations available!", "synthetic_ev_generator")
             elif stats.get('available_ports', 0) == 0:
-                logger.warning("⚠️ No available charging ports!")
+                warning("⚠️ No available charging ports!", "synthetic_ev_generator")
             elif stats.get('utilization_rate', 0) > 0.9:
-                logger.warning("⚠️ Very high utilization rate - may cause charging delays")
+                warning("⚠️ Very high utilization rate - may cause charging delays", "synthetic_ev_generator")
             
         except Exception as e:
-            logger.error(f"❌ Could not get infrastructure status: {e}")
+            error(f"❌ Could not get infrastructure status: {e}", "synthetic_ev_generator")
 
     def get_infrastructure_manager(self) -> ChargingInfrastructureManager:
         """Get the infrastructure manager instance for external access"""
@@ -1493,7 +1533,7 @@ class SyntheticEVGenerator:
         )
         
         if not nearby_stations:
-            logger.warning(f"No charging stations found near {location} for {vehicle['vehicle_id']}")
+            warning(f"No charging stations found near {location} for {vehicle['vehicle_id']}", "synthetic_ev_generator")
             return None
         
         # Simple availability filter - just operational stations
@@ -1503,7 +1543,7 @@ class SyntheticEVGenerator:
         ]
         
         if not available_stations:
-            logger.warning(f"No operational charging stations near {location} for {vehicle['vehicle_id']}")
+            warning(f"No operational charging stations near {location} for {vehicle['vehicle_id']}", "synthetic_ev_generator")
             return None
         
         # SIMPLIFIED: Select station using simple distance + cost logic
@@ -1614,7 +1654,7 @@ class SyntheticEVGenerator:
     def generate_complete_dataset(self, num_days: int = 30) -> Dict[str, pd.DataFrame]:
         """Generate complete synthetic EV fleet dataset - SIMPLIFIED"""
         
-        logger.info(f"🚀 Generating complete dataset for {num_days} days...")
+        info(f"🚀 Generating complete dataset for {num_days} days...", "synthetic_ev_generator")
         
         # Initialize data structures
         all_routes = []
@@ -1623,16 +1663,16 @@ class SyntheticEVGenerator:
         all_weather_data = []
         
         # Load road network ONCE at the beginning
-        logger.info("📍 Loading road network...")
+        info("📍 Loading road network...", "synthetic_ev_generator")
         self.network_db.load_or_create_network()
         
         # Generate fleet vehicles (this will also create home charging stations)
         if not self.fleet_vehicles:
-            logger.info("🚗 Generating fleet vehicles...")
+            info("🚗 Generating fleet vehicles...", "synthetic_ev_generator")
             self.generate_fleet_vehicles()
         
         # Log initial infrastructure status
-        logger.info("🏗️ Infrastructure status:")
+        info("🏗️ Infrastructure status:", "synthetic_ev_generator")
         self.log_infrastructure_status()
         
         # Generate data for each day
@@ -1640,7 +1680,7 @@ class SyntheticEVGenerator:
         
         for day in range(num_days):
             current_date = start_date + timedelta(days=day)
-            logger.info(f"📅 Generating data for day {day + 1}/{num_days}: {current_date.strftime('%Y-%m-%d')}")
+            info(f"📅 Generating data for day {day + 1}/{num_days}: {current_date.strftime('%Y-%m-%d')}", "synthetic_ev_generator")
             
             # Generate weather for the day
             daily_weather = self._get_weather_conditions(current_date)
@@ -1658,7 +1698,7 @@ class SyntheticEVGenerator:
                     failed_routes = len(daily_routes) - len(valid_routes)
                     
                     if failed_routes > 0:
-                        logger.debug(f"Vehicle {vehicle['vehicle_id']}: {len(valid_routes)} successful routes, {failed_routes} fallback routes")
+                        debug(f"Vehicle {vehicle['vehicle_id']}: {len(valid_routes)} successful routes, {failed_routes} fallback routes", "synthetic_ev_generator")
                     
                     all_routes.extend(valid_routes)
                     
@@ -1673,7 +1713,7 @@ class SyntheticEVGenerator:
                         if self._validate_charging_session_simple(session):
                             valid_charging_sessions.append(session)
                         else:
-                            logger.warning(f"Invalid charging session for {vehicle['vehicle_id']}: {session.get('session_id', 'unknown')}")
+                            warning(f"Invalid charging session for {vehicle['vehicle_id']}: {session.get('session_id', 'unknown')}", "synthetic_ev_generator")
                     
                     all_charging_sessions.extend(valid_charging_sessions)
                     
@@ -1701,14 +1741,14 @@ class SyntheticEVGenerator:
                     all_vehicle_states.append(vehicle_state)
                     
                 except Exception as e:
-                    logger.error(f"Error generating data for vehicle {vehicle['vehicle_id']} on {current_date}: {e}")
+                    error(f"Error generating data for vehicle {vehicle['vehicle_id']} on {current_date}: {e}", "synthetic_ev_generator")
                     continue
             
             # Log daily progress
             if (day + 1) % 7 == 0 or day == num_days - 1:
-                logger.info(f"✅ Completed {day + 1}/{num_days} days")
-                logger.info(f"   Routes generated: {len(all_routes):,}")
-                logger.info(f"   Charging sessions: {len(all_charging_sessions):,}")
+                info(f"✅ Completed {day + 1}/{num_days} days", "synthetic_ev_generator")
+                info(f"   Routes generated: {len(all_routes):,}", "synthetic_ev_generator")
+                info(f"   Charging sessions: {len(all_charging_sessions):,}", "synthetic_ev_generator")
         
         # Convert to DataFrames
         datasets = {
@@ -1724,9 +1764,9 @@ class SyntheticEVGenerator:
             infrastructure_datasets = self._create_infrastructure_datasets_simple()
             datasets.update(infrastructure_datasets)
         except Exception as e:
-            logger.warning(f"Could not create infrastructure datasets: {e}")
+            warning(f"Could not create infrastructure datasets: {e}", "synthetic_ev_generator")
         
-        logger.info("✅ Dataset generation complete!")
+        info("✅ Dataset generation complete!", "synthetic_ev_generator")
         self._print_dataset_summary(datasets)
         
         return datasets
@@ -1774,10 +1814,10 @@ class SyntheticEVGenerator:
             if len(combined_stations) > 0:
                 infrastructure_datasets['charging_infrastructure'] = combined_stations
             
-            logger.info(f"Created {len(infrastructure_datasets)} infrastructure datasets")
+            info(f"Created {len(infrastructure_datasets)} infrastructure datasets", "synthetic_ev_generator")
             
         except Exception as e:
-            logger.error(f"Error creating infrastructure datasets: {e}")
+            error(f"Error creating infrastructure datasets: {e}", "synthetic_ev_generator")
         
         return infrastructure_datasets
 
@@ -1897,7 +1937,7 @@ class SyntheticEVGenerator:
                     df_clean.to_parquet(filepath, compression='snappy' if use_compression else None)
                 
                 saved_files[f"{name}_{file_format}"] = filepath
-                logger.info(f"Saved {name} dataset to {filepath}")
+                info(f"Saved {name} dataset to {filepath}", "synthetic_ev_generator")
         
         # Save metadata
         metadata = {
@@ -1940,7 +1980,7 @@ class SyntheticEVGenerator:
                     if has_mixed_types or has_complex_objects:
                         # Convert to string representation
                         df_clean[col] = df_clean[col].astype(str)
-                        logger.debug(f"Converted column '{col}' to string due to mixed/complex types")
+                        debug(f"Converted column '{col}' to string due to mixed/complex types", "synthetic_ev_generator")
         
         # Specifically handle known problematic columns
         problematic_columns = ['station_id', 'connector_types', 'gps_trace']
@@ -1952,14 +1992,16 @@ class SyntheticEVGenerator:
         return df_clean
 
 
+
+
 # Usage example and testing functions
 def main():
     """Main function to generate synthetic EV fleet data"""
     
     # Configuration override for testing
     config_override = {
-        'fleet': {'fleet_size': 10},  # Smaller fleet for testing
-        'simulation': {'simulation_days': 1}  # One week of data
+        'fleet': {'fleet_size': 30},  # Smaller fleet for testing
+        'simulation': {'simulation_days': 60}  # One week of data
     }
     
     # Initialize generator
@@ -1973,7 +2015,7 @@ def main():
     print(f"\n📊 Network Status: {network_info}")
 
     # Generate complete dataset
-    datasets = generator.generate_complete_dataset(num_days=1)
+    datasets = generator.generate_complete_dataset(num_days=60)
     
     # Save datasets
     saved_files = generator.save_datasets(datasets)
@@ -1991,7 +2033,7 @@ def main():
         for name, filepath in infra_files.items():
             print(f"  {name}: {filepath}")
     except Exception as e:
-        logger.warning(f"Could not export infrastructure data: {e}")
+        warning(f"Could not export infrastructure data: {e}", "synthetic_ev_generator")
 
 if __name__ == "__main__":
     main()
