@@ -10,17 +10,13 @@ from typing import Dict, List, Tuple, Optional
 import numpy as np
 import os
 from geopy.distance import geodesic
-import logging
+from config.logging_config import *
+from src.utils.logger import info, warning, error, debug
 
 # Import our configurations
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from config.ev_config import *
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 
 MAJOR_LOCATIONS = {
     'downtown_sf': (37.7749, -122.4194),
@@ -52,7 +48,7 @@ class NetworkDatabase:
     
     def save_network(self, network: nx.MultiDiGraph, metadata: Dict = None):
         """Save network to compressed pickle file"""
-        logger.info(f"Saving network to {self.db_path}")
+        info(f"Saving network to {self.db_path}", 'road_network_db')
         
         data = {
             'network': network,
@@ -65,14 +61,14 @@ class NetworkDatabase:
         with gzip.open(self.db_path, 'wb') as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
         
-        logger.info(f"Network saved: {len(network.nodes)} nodes, {len(network.edges)} edges")
+        info(f"Network saved: {len(network.nodes)} nodes, {len(network.edges)} edges", 'road_network_db')
     
     def load_network(self) -> nx.MultiDiGraph:
         """Load network from pickle file"""
         if not self.network_exists():
             raise FileNotFoundError(f"Network file not found: {self.db_path}")
         
-        logger.info(f"Loading network from {self.db_path}")
+        info(f"Loading network from {self.db_path}", 'road_network_db')
         
         with gzip.open(self.db_path, 'rb') as f:
             data = pickle.load(f)
@@ -80,8 +76,8 @@ class NetworkDatabase:
         self.network = data['network']
         self.metadata = data.get('metadata', {})
         
-        logger.info(f"Network loaded: {len(self.network.nodes)} nodes, {len(self.network.edges)} edges")
-        logger.info(f"Created: {data.get('created_at', 'Unknown')}")
+        info(f"Network loaded: {len(self.network.nodes)} nodes, {len(self.network.edges)} edges", 'road_network_db')
+        info(f"Created: {data.get('created_at', 'Unknown')}", 'road_network_db')
         
         return self.network
     
@@ -131,7 +127,7 @@ class NetworkDatabase:
         # Try to load existing network from database
         if self.network_exists():
             try:
-                logger.info("📁 Loading existing network from database...")
+                info("📁 Loading existing network from database...", 'road_network_db')
                 road_network = self.load_network()
                 
                 # Validate connectivity with Bay Area locations
@@ -144,19 +140,19 @@ class NetworkDatabase:
                 ]
                 
                 connectivity = self.validate_network_connectivity(test_locations)
-                logger.info(f"📊 Loaded network connectivity: {connectivity:.2f}")
+                info(f"📊 Loaded network connectivity: {connectivity:.2f}", 'road_network_db')
                 
                 if connectivity > 0.4:  # Accept 40%+ connectivity
-                    logger.info("✅ Using existing network from database")
+                    info("✅ Using existing network from database", 'road_network_db')
                     return road_network
                 else:
-                    logger.warning("⚠️ Loaded network has poor connectivity, rebuilding...")
+                    warning("⚠️ Loaded network has poor connectivity, rebuilding...", 'road_network_db')
                     
             except Exception as e:
-                logger.warning(f"❌ Failed to load existing network: {e}")
+                warning(f"❌ Failed to load existing network: {e}", 'road_network_db')
         
         # Create new network if none exists or existing one is poor
-        logger.info("🔨 Creating new road network...")
+        info("🔨 Creating new road network...", 'road_network_db')
         road_network = self._create_and_save_network()
         return road_network
 
@@ -167,7 +163,7 @@ class NetworkDatabase:
         
         # Strategy 1: Larger Bay Area bounding box (most reliable)
         try:
-            logger.info("🌐 Trying comprehensive Bay Area bounding box...")
+            info("🌐 Trying comprehensive Bay Area bounding box...", 'road_network_db')
             # Expanded Bay Area bounds to include all major cities
             # [north, south, east, west] - covers SF to San Jose, Oakland to coast
             bbox_bounds = (38.1, 37.1, -121.3, -123.0)  # Much larger area
@@ -181,7 +177,7 @@ class NetworkDatabase:
             )
             
             if network and len(network.nodes) > 2000:
-                logger.info(f"✅ Large Bay Area bbox successful: {len(network.nodes)} nodes")
+                info(f"✅ Large Bay Area bbox successful: {len(network.nodes)} nodes", 'road_network_db')
                 
                 # Test connectivity immediately
                 test_locations = [
@@ -192,19 +188,19 @@ class NetworkDatabase:
                 ]
                 
                 connectivity = self._quick_connectivity_test(network, test_locations)
-                logger.info(f"📊 Bbox network connectivity: {connectivity:.2f}")
+                info(f"📊 Bbox network connectivity: {connectivity:.2f}", 'road_network_db')
                 
                 if connectivity > 0.5:  # Good connectivity
                     network = self._add_network_attributes(network)
                     return self._enhance_network_connectivity(network)
                 else:
-                    logger.warning("⚠️ Bbox network has poor connectivity")
+                    warning("⚠️ Bbox network has poor connectivity", 'road_network_db')
             else:
-                logger.warning("⚠️ Bbox network too small")
+                warning("⚠️ Bbox network too small", 'road_network_db')
                 network = None
                 
         except Exception as e:
-            logger.warning(f"❌ Large bbox failed: {e}")
+            warning(f"❌ Large bbox failed: {e}", 'road_network_db')
             network = None
         
         # Strategy 2: Multiple overlapping city networks (merge approach)
@@ -217,7 +213,7 @@ class NetworkDatabase:
         
         # Strategy 4: Enhanced mock network as fallback
         if network is None:
-            logger.info("🎭 Creating enhanced mock network with full Bay Area coverage...")
+            info("🎭 Creating enhanced mock network with full Bay Area coverage...", 'road_network_db')
             network = self._create_comprehensive_mock_network()
         
         # Always enhance connectivity
@@ -234,7 +230,7 @@ class NetworkDatabase:
                 'edges_count': len(network.edges)
             }
             
-            logger.info("💾 Saving network to database...")
+            info("💾 Saving network to database...", 'road_network_db')
             self.network_db.save_network(network, metadata)
             
             return network
@@ -244,7 +240,7 @@ class NetworkDatabase:
     def _create_merged_city_networks(self) -> Optional[nx.MultiDiGraph]:
         """Create network by merging multiple city networks"""
         try:
-            logger.info("🏙️ Trying merged city networks approach...")
+            info("🏙️ Trying merged city networks approach...", 'road_network_db')
             
             # Major Bay Area cities with larger radius
             cities = [
@@ -259,7 +255,7 @@ class NetworkDatabase:
             
             for city_name, center_point, radius in cities:
                 try:
-                    logger.info(f"📍 Loading network for {city_name} (radius: {radius}m)")
+                    info(f"📍 Loading network for {city_name} (radius: {radius}m)", 'road_network_db')
                     
                     # Use point-based approach for reliability
                     city_network = ox.graph_from_point(
@@ -271,32 +267,32 @@ class NetworkDatabase:
                     
                     if merged_network is None:
                         merged_network = city_network
-                        logger.info(f"  🏗️ Base network: {len(city_network.nodes)} nodes")
+                        info(f"  🏗️ Base network: {len(city_network.nodes)} nodes", 'road_network_db')
                     else:
                         # Merge networks
                         merged_network = nx.compose_all([merged_network, city_network])
-                        logger.info(f"  ➕ Merged network: {len(merged_network.nodes)} nodes")
+                        info(f"  ➕ Merged network: {len(merged_network.nodes)} nodes", 'road_network_db')
                     
                 except Exception as e:
-                    logger.warning(f"  ❌ Failed to load {city_name}: {e}")
+                    warning(f"  ❌ Failed to load {city_name}: {e}", 'road_network_db')
                     continue
             
             if merged_network and len(merged_network.nodes) > 5000:
-                logger.info(f"✅ Merged network successful: {len(merged_network.nodes)} nodes")
+                info(f"✅ Merged network successful: {len(merged_network.nodes)} nodes", 'road_network_db')
                 merged_network = self._add_network_attributes(merged_network)
                 return merged_network
             else:
-                logger.warning("⚠️ Merged network insufficient")
+                warning("⚠️ Merged network insufficient", 'road_network_db')
                 return None
                 
         except Exception as e:
-            logger.warning(f"❌ Merged city networks failed: {e}")
+            warning(f"❌ Merged city networks failed: {e}", 'road_network_db')
             return None
 
     def _create_filtered_state_network(self) -> Optional[nx.MultiDiGraph]:
         """Create network from California state data, filtered to Bay Area"""
         try:
-            logger.info("🏛️ Trying filtered state network approach...")
+            info("🏛️ Trying filtered state network approach...", 'road_network_db')
             
             # Get California network and filter to Bay Area
             bbox_bounds = (38.2, 36.8, -121.0, -123.2)  # Very large Bay Area
@@ -309,20 +305,20 @@ class NetworkDatabase:
             )
             
             if network and len(network.nodes) > 3000:
-                logger.info(f"✅ State network successful: {len(network.nodes)} nodes")
+                info(f"✅ State network successful: {len(network.nodes)} nodes", 'road_network_db')
                 network = self._add_network_attributes(network)
                 return network
             else:
-                logger.warning("⚠️ State network insufficient")
+                warning("⚠️ State network insufficient", 'road_network_db')
                 return None
                 
         except Exception as e:
-            logger.warning(f"❌ State network failed: {e}")
+            warning(f"❌ State network failed: {e}", 'road_network_db')
             return None
 
     def _create_comprehensive_mock_network(self) -> nx.MultiDiGraph:
         """Create comprehensive mock network covering full Bay Area"""
-        logger.info("Creating comprehensive mock network with full Bay Area coverage...")
+        info("Creating comprehensive mock network with full Bay Area coverage...", 'road_network_db')
         
         G = nx.MultiDiGraph()
         
@@ -500,7 +496,7 @@ class NetworkDatabase:
                             travel_time=travel_time,
                             highway='secondary')
             
-            logger.info(f"Created comprehensive mock network with {len(G.nodes)} nodes and {len(G.edges)} edges")
+            info(f"Created comprehensive mock network with {len(G.nodes)} nodes and {len(G.edges)} edges", 'road_network_db')
             return G
 
     def _add_local_edge(self, G, node1, node2, speed_kmh=40):
@@ -534,7 +530,7 @@ class NetworkDatabase:
         components = list(nx.connected_components(undirected))
         
         if len(components) > 1:
-            logger.info(f"🔗 Found {len(components)} disconnected components, adding bridges...")
+            info(f"🔗 Found {len(components)} disconnected components, adding bridges...", 'road_network_db')
             
             # Connect largest component to others
             largest_component = max(components, key=len)
@@ -594,11 +590,11 @@ class NetworkDatabase:
                                     highway=highway_type)
                         
                         bridges_added += 1
-                        logger.info(f"🌉 Added {highway_type}: {min_distance/1000:.1f}km")
+                        info(f"🌉 Added {highway_type}: {min_distance/1000:.1f}km", 'road_network_db')
             
-            logger.info(f"✅ Added {bridges_added} synthetic connections")
+            info(f"✅ Added {bridges_added} synthetic connections", 'road_network_db')
         else:
-            logger.info("✅ Network is already fully connected")
+            info("✅ Network is already fully connected", 'road_network_db')
         
         # Add strategic Bay Area connections if this is a mock network
         if not hasattr(network, 'graph') or 'crs' not in network.graph:
@@ -609,7 +605,7 @@ class NetworkDatabase:
     def _add_strategic_bay_area_connections(self, network: nx.MultiDiGraph) -> nx.MultiDiGraph:
         """Add strategic connections for key Bay Area routes"""
         
-        logger.info("🌉 Adding strategic Bay Area connections...")
+        info("🌉 Adding strategic Bay Area connections...", 'road_network_db')
         
         # Key Bay Area connection points that should always be connected
         strategic_connections = [
@@ -636,7 +632,7 @@ class NetworkDatabase:
                     # Check if already connected
                     try:
                         nx.shortest_path(network, node1, node2)
-                        logger.debug(f"✅ {description} already connected")
+                        debug(f"✅ {description} already connected", 'road_network_db')
                         continue
                     except nx.NetworkXNoPath:
                         # Add connection
@@ -659,13 +655,13 @@ class NetworkDatabase:
                                     description=description)
                         
                         connections_added += 1
-                        logger.info(f"🔗 Added {description}: {distance/1000:.1f}km")
+                        info(f"🔗 Added {description}: {distance/1000:.1f}km", 'road_network_db')
             
             except Exception as e:
-                logger.debug(f"Could not add {description}: {e}")
+                debug(f"Could not add {description}: {e}", 'road_network_db')
                 continue
         
-        logger.info(f"✅ Added {connections_added} strategic Bay Area connections")
+        info(f"✅ Added {connections_added} strategic Bay Area connections", 'road_network_db')
         return network
 
 
@@ -689,18 +685,18 @@ class NetworkDatabase:
                                 path = nx.shortest_path(network, origin_node, dest_node)
                                 if len(path) > 1:  # Valid path
                                     successful_routes += 1
-                                    logger.debug(f"✅ Route {i}→{j}: {len(path)} nodes")
+                                    debug(f"✅ Route {i}→{j}: {len(path)} nodes", 'road_network_db')
                                 else:
-                                    logger.debug(f"⚠️ Route {i}→{j}: trivial path")
+                                    debug(f"⚠️ Route {i}→{j}: trivial path", 'road_network_db')
                             except nx.NetworkXNoPath:
-                                logger.debug(f"❌ Route {i}→{j}: no path")
+                                debug(f"❌ Route {i}→{j}: no path", 'road_network_db')
                         else:
-                            logger.debug(f"❌ Route {i}→{j}: invalid nodes")
+                            debug(f"❌ Route {i}→{j}: invalid nodes", 'road_network_db')
                     except Exception as e:
-                        logger.debug(f"❌ Route {i}→{j}: error {e}")
+                        debug(f"❌ Route {i}→{j}: error {e}", 'road_network_db')
         
         connectivity_score = successful_routes / total_tests if total_tests > 0 else 0
-        logger.info(f"📊 Connectivity: {successful_routes}/{total_tests} routes ({connectivity_score:.2%})")
+        info(f"📊 Connectivity: {successful_routes}/{total_tests} routes ({connectivity_score:.2%})", 'road_network_db')
         return connectivity_score
 
     def validate_network_coverage(self) -> Dict:
@@ -814,7 +810,7 @@ class NetworkDatabase:
         components = list(nx.connected_components(undirected))
         
         if len(components) > 1:
-            logger.info(f"🔗 Found {len(components)} disconnected components, adding bridges...")
+            info(f"🔗 Found {len(components)} disconnected components, adding bridges...", 'road_network_db')
             
             # Connect largest component to others
             largest_component = max(components, key=len)
@@ -861,11 +857,11 @@ class NetworkDatabase:
                                     highway='synthetic_bridge')
                         
                         bridges_added += 1
-                        logger.info(f"🌉 Added synthetic bridge: {min_distance/1000:.1f}km")
+                        info(f"🌉 Added synthetic bridge: {min_distance/1000:.1f}km", 'road_network_db')
             
-            logger.info(f"✅ Added {bridges_added} synthetic bridges")
+            info(f"✅ Added {bridges_added} synthetic bridges", 'road_network_db')
         else:
-            logger.info("✅ Network is already fully connected")
+            info("✅ Network is already fully connected", 'road_network_db')
         
         return network
 
@@ -914,20 +910,20 @@ class NetworkDatabase:
     def _add_network_attributes(self, network):  # Add 'network' parameter
         """Add speed and travel time attributes to network edges"""
         try:
-            logger.info("Adding edge speeds and travel times...")
+            info("Adding edge speeds and travel times...", 'road_network_db')
             network = ox.add_edge_speeds(network)  # Use the parameter
             network = ox.add_edge_travel_times(network)  # Use the parameter
-            logger.info("Successfully added network attributes")
+            info("Successfully added network attributes", 'road_network_db')
             return network  # Return the modified network
         except Exception as e:
-            logger.warning(f"Failed to add network attributes: {e}")
+            warning(f"Failed to add network attributes: {e}", 'road_network_db')
             # Add basic attributes manually
             return self._add_basic_network_attributes(network)  # Pass network parameter
 
 
     def _add_basic_network_attributes(self, network):  # Add network parameter
         """Add basic speed and travel time attributes manually"""
-        logger.info("Adding basic network attributes manually...")
+        info("Adding basic network attributes manually...", 'road_network_db')
         
         for u, v, key, data in network.edges(keys=True, data=True):  # Use parameter
             # Get edge length
