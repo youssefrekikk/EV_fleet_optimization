@@ -9,12 +9,13 @@ import math
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 from geopy.distance import geodesic
-import logging
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from config.physics_constants import PHYSICS_CONSTANTS, TEMPERATURE_EFFICIENCY , BATTERY_PARAMETERS
+from config.logging_config import *
+from src.utils.logger import get_logger, log_detailed, debug, info, warning, error
 
-logger = logging.getLogger(__name__)
+logger = get_logger('advanced_energy_model')
 
 class AdvancedEVEnergyModel:
     """
@@ -41,38 +42,14 @@ class AdvancedEVEnergyModel:
         self.REFERENCE_TEMP = self.constants['reference_temp_k']
         self.TEMP_CAPACITY_ALPHA = self.constants['temp_capacity_alpha']
 
-        self.debug_mode = True  # Enable detailed logging
+        # Check if detailed logging is enabled for energy calculations
+        self.debug_mode = is_detailed_logging_enabled('energy_calculation')
         self.segment_debug_count = 0
-        self.debug_file = None
-        self.detailed_log_file = None
-
-        # Create debug directory and files
-        os.makedirs("debug_logs", exist_ok=True)
-
-        # Create detailed efficiency log file
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.detailed_log_file = f"debug_logs/efficiency_analysis_{timestamp}.log"
-
-        # Initialize detailed log file
-        with open(self.detailed_log_file, 'w') as f:
-            f.write("="*80 + "\n")
-            f.write("DETAILED EV EFFICIENCY ANALYSIS LOG\n")
-            f.write(f"Generated: {datetime.now().isoformat()}\n")
-            f.write("="*80 + "\n\n")
-            
-            # Log physics constants
-            f.write("PHYSICS CONSTANTS:\n")
-            f.write("-" * 40 + "\n")
-            for key, value in self.constants.items():
-                f.write(f"{key}: {value}\n")
-            f.write("\n")
     
     def _log_detailed(self, message: str, vehicle_id: str = "unknown"):
         """Write detailed log message to file"""
-        if self.detailed_log_file:
-            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-            with open(self.detailed_log_file, 'a') as f:
-                f.write(f"[{timestamp}] [{vehicle_id}] {message}\n")
+        if self.debug_mode:
+            log_detailed(message, "energy_calculation", vehicle_id)
 
 
     
@@ -122,16 +99,50 @@ class AdvancedEVEnergyModel:
 
             try:
                 self._log_detailed(f"\n--- SEGMENT {segment_count} ---", vehicle_id)
-                segment_result = self._calculate_segment_consumption(
-                    gps_trace[i], gps_trace[i + 1], 
-                    vehicle_specs, battery_params, weather_conditions
-                )
-                
+                segment_result = None
+                # Calculate segment distance and validate
+                distance_m = geodesic(
+                    (gps_trace[i]['latitude'], gps_trace[i]['longitude']),
+                    (gps_trace[i + 1]['latitude'], gps_trace[i + 1]['longitude'])
+                ).meters
+                self._log_detailed(f"Segment distance: {distance_m:.1f}m", vehicle_id)
+
+                if distance_m < 30:  # Use simplified calculation for short segments
+                    distance_km = distance_m / 1000
+                    self._log_detailed(f"SHORT SEGMENT (<30m) - using simplified calculation", vehicle_id)
+                    # Estimate time_diff_s for short segments
+                    speed1 = gps_trace[i].get('speed_kmh', 30) / 3.6
+                    speed2 = gps_trace[i + 1].get('speed_kmh', 30) / 3.6
+                    avg_speed = max((speed1 + speed2) / 2, 1.0)  # Prevent division by zero
+                    time_diff_s = distance_m / avg_speed
+                    # Simple energy: rolling resistance + minimal auxiliary
+                    rolling_force = self.ROLLING_RESISTANCE_BASE * vehicle_specs['mass'] * self.GRAVITY
+                    rolling_energy_kwh = (rolling_force * distance_m) / 3.6e6 / 0.85  # Include drivetrain efficiency
+                    # Minimal auxiliary for short time
+                    aux_energy_kwh = (vehicle_specs['auxiliary_power'] * 0.2 * time_diff_s) / 3600  # 20% aux load
+                    total_simple_energy = rolling_energy_kwh + aux_energy_kwh
+                    self._log_detailed(f"Short segment: rolling={rolling_energy_kwh:.4f}kWh,aux={aux_energy_kwh:.4f}kWh, total={total_simple_energy:.4f}kWh", vehicle_id)
+                    segment_result = {
+                        'distance_km': distance_km, 'energy_kwh': total_simple_energy, 'breakdown': {
+                            'rolling_resistance': rolling_energy_kwh,
+                            'aerodynamic_drag': 0,
+                            'elevation_change': 0,
+                            'acceleration': 0,
+                            'hvac': 0,
+                            'auxiliary': aux_energy_kwh,
+                            'regenerative_braking': 0,
+                            'battery_thermal_loss': 0
+                        }
+                    }
+                else:
+                    segment_result = self._calculate_segment_consumption(
+                        gps_trace[i], gps_trace[i + 1], 
+                        vehicle_specs, battery_params, weather_conditions, distance_m
+                    )
                 if segment_result['distance_km'] > 0:  # Only count valid segments
                     valid_segments += 1
                     total_consumption += segment_result['energy_kwh']
                     total_distance += segment_result['distance_km']
-                    
                     # Update breakdown
                     for component, value in segment_result['breakdown'].items():
                         consumption_breakdown[component] += value
@@ -142,9 +153,8 @@ class AdvancedEVEnergyModel:
                 else:
                     self._log_detailed(f"Segment {segment_count}: INVALID (distance=0)", vehicle_id) 
             except Exception as e:
-                logger.debug(f"Segment calculation error: {e}")
+                debug(f"Segment calculation error: {e}", "advanced_energy_model")
                 self._log_detailed(f"Segment {segment_count} ERROR: {e}", vehicle_id)
-        
                 continue
         self._log_detailed(f"\nSEGMENT PROCESSING COMPLETE:", vehicle_id)
         self._log_detailed(f"Total segments: {segment_count}, Valid: {valid_segments}", vehicle_id)
@@ -162,31 +172,26 @@ class AdvancedEVEnergyModel:
             percentage = (value / total_consumption * 100) if total_consumption > 0 else 0
             self._log_detailed(f"  {component}: {value:.4f}kWh ({percentage:.1f}%)", vehicle_id)
 
-
-        # 🔧 FIX: Cap unrealistic efficiency
-        """
-        if efficiency_kwh_per_100km > 45:  # Cap at 45 kWh/100km
-            logger.warning(f"Capping unrealistic efficiency: {efficiency_kwh_per_100km:.2f} -> 45.0 kWh/100km")
-            efficiency_kwh_per_100km = 45.0
-            total_consumption = (efficiency_kwh_per_100km / 100) * total_distance
-
-
-        """
-        if efficiency_kwh_per_100km > 30:  # Log unrealistic efficiency
-            self._log_detailed(f"⚠️ HIGH EFFICIENCY DETECTED: {efficiency_kwh_per_100km:.1f}kWh/100km", vehicle_id)
-            self._log_detailed(f"Distance: {total_distance:.2f}km", vehicle_id)
-            self._log_detailed(f"HVAC: {consumption_breakdown.get('hvac', 0):.3f}kWh", vehicle_id)
-            self._log_detailed(f"Aux: {consumption_breakdown.get('auxiliary', 0):.3f}kWh", vehicle_id)
-            self._log_detailed(f"Rolling: {consumption_breakdown.get('rolling_resistance', 0):.3f}kWh", vehicle_id)
-        
-
-        # Apply minimum realistic consumption (prevent zero consumption)
-        if total_distance > 0 and total_consumption < 0.05:
-            # Minimum consumption based on vehicle weight and distance
-            min_consumption = self._calculate_minimum_consumption(total_distance, vehicle_specs)
-            total_consumption = max(total_consumption, min_consumption)
-            efficiency_kwh_per_100km = total_consumption / total_distance * 100
-        
+        # --- EFFICIENCY CAPPING/FLOORING LOGIC ---
+        min_efficiency = 8.0  # kWh/100km
+        max_efficiency = 60.0 # kWh/100km
+        # If total_distance > 0 and total_consumption is 0 or very low, set to minimum
+        if total_distance > 0 and (total_consumption <= 0.001 or efficiency_kwh_per_100km < min_efficiency):
+            old_eff = efficiency_kwh_per_100km
+            total_consumption = (min_efficiency / 100) * total_distance
+            efficiency_kwh_per_100km = min_efficiency
+            self._log_detailed(f"⚠️ Efficiency too low ({old_eff:.2f}), floored to {min_efficiency} kWh/100km", vehicle_id)
+        # If efficiency is too high, cap it
+        elif total_distance > 0 and efficiency_kwh_per_100km > max_efficiency:
+            old_eff = efficiency_kwh_per_100km
+            total_consumption = (max_efficiency / 100) * total_distance
+            efficiency_kwh_per_100km = max_efficiency
+            self._log_detailed(f"⚠️ Efficiency too high ({old_eff:.2f}), capped to {max_efficiency} kWh/100km", vehicle_id)
+        # If total_distance > 0 and total_consumption is 0, set to minimum
+        elif total_distance > 0 and total_consumption == 0:
+            total_consumption = (min_efficiency / 100) * total_distance
+            efficiency_kwh_per_100km = min_efficiency
+            self._log_detailed(f"⚠️ Zero consumption for nonzero distance, set to {min_efficiency} kWh/100km", vehicle_id)
 
         final_result = {
             'total_consumption_kwh': round(total_consumption, 3),
@@ -228,40 +233,8 @@ class AdvancedEVEnergyModel:
     
     def _calculate_segment_consumption(self, point1: Dict, point2: Dict, 
                                      vehicle_specs: Dict, battery_params: Dict,
-                                     weather: Dict,vehicle_id: str = "unknown") -> Dict:
+                                     weather: Dict, distance_m: float, vehicle_id: str = "unknown") -> Dict:
         """Calculate energy consumption for a single GPS segment"""
-        
-        # Calculate segment distance and validate
-        distance_m = geodesic(
-            (point1['latitude'], point1['longitude']),
-            (point2['latitude'], point2['longitude'])
-        ).meters
-        self._log_detailed(f"Segment distance: {distance_m:.1f}m", vehicle_id)
-
-        if distance_m < 30:  # Use simplified calculation for short segments
-            distance_km = distance_m / 1000
-            self._log_detailed(f"SHORT SEGMENT (<30m) - using simplified calculation", vehicle_id)
-            # Simple energy: rolling resistance + minimal auxiliary
-            rolling_force = self.ROLLING_RESISTANCE_BASE * vehicle_specs['mass'] * self.GRAVITY
-            rolling_energy_kwh = (rolling_force * distance_m) / 3.6e6 / 0.85  # Include drivetrain efficiency
-            
-            # Minimal auxiliary for short time
-            aux_energy_kwh = (vehicle_specs['auxiliary_power'] * 0.2 * time_diff_s) / 3600  # 20% aux load
-            
-            total_simple_energy = rolling_energy_kwh + aux_energy_kwh
-            self._log_detailed(f"Short segment: rolling={rolling_energy_kwh:.4f}kWh,aux={aux_energy_kwh:.4f}kWh, total={total_simple_energy:.4f}kWh", vehicle_id)
-            return {
-            'distance_km': distance_km, 'energy_kwh': total_simple_energy, 'breakdown': {
-            'rolling_resistance': rolling_energy_kwh,
-            'aerodynamic_drag': 0,
-            'elevation_change': 0,
-            'acceleration': 0,
-            'hvac': 0,
-            'auxiliary': aux_energy_kwh,
-            'regenerative_braking': 0,
-            'battery_thermal_loss': 0
-            }
-        }
         
         # Calculate time difference and validate
         try:
