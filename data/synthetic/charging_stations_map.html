@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html>
+<head>
+    
+    <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/css/bootstrap.min.css"/>
+    <link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.0/css/bootstrap-glyphicons.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.2.0/css/all.min.css"/>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/python-visualization/folium/folium/templates/leaflet.awesome.rotate.min.css"/>
+    
+            <meta name="viewport" content="width=device-width,
+                initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+            <style>
+                #map_9aedbfca804425a8c9b7ee08ab10ec7e {
+                    position: relative;
+                    width: 100.0%;
+                    height: 100.0%;
+                    left: 0.0%;
+                    top: 0.0%;
+                }
+                .leaflet-container { font-size: 1rem; }
+            </style>
+
+            <style>html, body {
+                width: 100%;
+                height: 100%;
+                margin: 0;
+                padding: 0;
+            }
+            </style>
+
+            <style>#map {
+                position:absolute;
+                top:0;
+                bottom:0;
+                right:0;
+                left:0;
+                }
+            </style>
+
+            <script>
+                L_NO_TOUCH = false;
+                L_DISABLE_3D = false;
+            </script>
+
+        
+</head>
+<body>
+    
+    <div style="position: fixed; 
+                 bottom: 50px; left: 50px; width: 200px; height: 120px; 
+                 background-color: white; border:2px solid grey; z-index:9999; 
+                 font-size:14px; padding: 10px"><p><b>Charging Stations</b></p><p><i class="fa fa-circle" style="color:red"></i> Home</p><p><i class="fa fa-circle" style="color:blue"></i> Powerflex</p><p><i class="fa fa-circle" style="color:green"></i> Unknown</p><p><i class="fa fa-circle" style="color:purple"></i> ChargePoint</p><p><i class="fa fa-circle" style="color:orange"></i> Tesla (Tesla-only charging)</p></div>
+    
+            <div class="folium-map" id="map_9aedbfca804425a8c9b7ee08ab10ec7e" ></div>
+        
+</body>
+<script>
+    
+    
+            var map_9aedbfca804425a8c9b7ee08ab10ec7e = L.map(
+                "map_9aedbfca804425a8c9b7ee08ab10ec7e",
+                {
+                    center: [37.53369584782609, -122.1035494130435],
+                    crs: L.CRS.EPSG3857,
+                    ...{
+  "zoom": 10,
+  "zoomControl": true,
+  "preferCanvas": false,
+}
+
+                }
+            );
+
+            
+
+        
+    
+            var tile_layer_6a6a233b54ca94a45b9ad85669c95c27 = L.tileLayer(
+                "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                {
+  "minZoom": 0,
+  "maxZoom": 19,
+  "maxNativeZoom": 19,
+  "noWrap": false,
+  "attribution": "\u0026copy; \u003ca href=\"https://www.openstreetmap.org/copyright\"\u003eOpenStreetMap\u003c/a\u003e contributors",
+  "subdomains": "abc",
+  "detectRetina": false,
+  "tms": false,
+  "opacity": 1,
+}
+
+            );
+        
+    
+            tile_layer_6a6a233b54ca94a45b9ad85669c95c27.addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+            var circle_marker_0c420394a1b85a5b136c11f10c8b8a06 = L.circleMarker(
+                [37.928937, -121.933779],
+                {"bubblingMouseEvents": true, "color": "red", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "red", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 1.0, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_fd013ba2bc79192b13e26ee6c4fcc676 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_c5bb2dec5ff4b5a65fad1eb19576a608 = $(`<div id="html_c5bb2dec5ff4b5a65fad1eb19576a608" style="width: 100.0%; height: 100.0%;">Station ID: home_EV_000<br>                  Operator: Home<br>                  Sessions: 2<br>                  Energy: 66.8 kWh</div>`)[0];
+                popup_fd013ba2bc79192b13e26ee6c4fcc676.setContent(html_c5bb2dec5ff4b5a65fad1eb19576a608);
+            
+        
+
+        circle_marker_0c420394a1b85a5b136c11f10c8b8a06.bindPopup(popup_fd013ba2bc79192b13e26ee6c4fcc676)
+        ;
+
+        
+    
+    
+            var circle_marker_7037a0b9f8145cf989536ef271bd70a3 = L.circleMarker(
+                [37.282666, -121.863122],
+                {"bubblingMouseEvents": true, "color": "red", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "red", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 1.0, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_336d0b6f301058af14202f5667d45229 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_b521bf60c4ac1cdd120829bf99a48905 = $(`<div id="html_b521bf60c4ac1cdd120829bf99a48905" style="width: 100.0%; height: 100.0%;">Station ID: home_EV_001<br>                  Operator: Home<br>                  Sessions: 2<br>                  Energy: 70.9 kWh</div>`)[0];
+                popup_336d0b6f301058af14202f5667d45229.setContent(html_b521bf60c4ac1cdd120829bf99a48905);
+            
+        
+
+        circle_marker_7037a0b9f8145cf989536ef271bd70a3.bindPopup(popup_336d0b6f301058af14202f5667d45229)
+        ;
+
+        
+    
+    
+            var circle_marker_a2f2017055eba208833331b7ad92ded0 = L.circleMarker(
+                [37.261176, -122.234553],
+                {"bubblingMouseEvents": true, "color": "red", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "red", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_e99be0513fb6ea0badf8cfc7f74c51d8 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_24d83235b50c38d0d911718178e6ab79 = $(`<div id="html_24d83235b50c38d0d911718178e6ab79" style="width: 100.0%; height: 100.0%;">Station ID: home_EV_002<br>                  Operator: Home<br>                  Sessions: 1<br>                  Energy: 17.3 kWh</div>`)[0];
+                popup_e99be0513fb6ea0badf8cfc7f74c51d8.setContent(html_24d83235b50c38d0d911718178e6ab79);
+            
+        
+
+        circle_marker_a2f2017055eba208833331b7ad92ded0.bindPopup(popup_e99be0513fb6ea0badf8cfc7f74c51d8)
+        ;
+
+        
+    
+    
+            var circle_marker_56a95911023cf3d25121c3c2c17f46ea = L.circleMarker(
+                [37.379398, -121.865208],
+                {"bubblingMouseEvents": true, "color": "red", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "red", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 1.0, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_b41067d42e7c9fd26b129ef8531fd0e9 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_ec2543a3ba229d9d91264e0d4bfff5b2 = $(`<div id="html_ec2543a3ba229d9d91264e0d4bfff5b2" style="width: 100.0%; height: 100.0%;">Station ID: home_EV_003<br>                  Operator: Home<br>                  Sessions: 2<br>                  Energy: 12.6 kWh</div>`)[0];
+                popup_b41067d42e7c9fd26b129ef8531fd0e9.setContent(html_ec2543a3ba229d9d91264e0d4bfff5b2);
+            
+        
+
+        circle_marker_56a95911023cf3d25121c3c2c17f46ea.bindPopup(popup_b41067d42e7c9fd26b129ef8531fd0e9)
+        ;
+
+        
+    
+    
+            var circle_marker_3db8cf3db4477d2bbc53a121be6bc936 = L.circleMarker(
+                [37.7448, -121.985496],
+                {"bubblingMouseEvents": true, "color": "red", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "red", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 1.0, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_712c1223981ae7afb620949d9a8400cf = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_ec0d49afb6157059fe89b1229edbca7a = $(`<div id="html_ec0d49afb6157059fe89b1229edbca7a" style="width: 100.0%; height: 100.0%;">Station ID: home_EV_005<br>                  Operator: Home<br>                  Sessions: 2<br>                  Energy: 19.3 kWh</div>`)[0];
+                popup_712c1223981ae7afb620949d9a8400cf.setContent(html_ec0d49afb6157059fe89b1229edbca7a);
+            
+        
+
+        circle_marker_3db8cf3db4477d2bbc53a121be6bc936.bindPopup(popup_712c1223981ae7afb620949d9a8400cf)
+        ;
+
+        
+    
+    
+            var circle_marker_0579209e75c1640c8b57e8c14e81a441 = L.circleMarker(
+                [37.392143, -121.878573],
+                {"bubblingMouseEvents": true, "color": "red", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "red", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 1.0, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_7d46308b5a02e76c9eaabcde4c6e4525 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_d2160698ad1560245a718efbcf537026 = $(`<div id="html_d2160698ad1560245a718efbcf537026" style="width: 100.0%; height: 100.0%;">Station ID: home_EV_007<br>                  Operator: Home<br>                  Sessions: 2<br>                  Energy: 12.5 kWh</div>`)[0];
+                popup_7d46308b5a02e76c9eaabcde4c6e4525.setContent(html_d2160698ad1560245a718efbcf537026);
+            
+        
+
+        circle_marker_0579209e75c1640c8b57e8c14e81a441.bindPopup(popup_7d46308b5a02e76c9eaabcde4c6e4525)
+        ;
+
+        
+    
+    
+            var circle_marker_313cc55a4b4b584d58668e9b5f81c14e = L.circleMarker(
+                [37.815208, -121.901954],
+                {"bubblingMouseEvents": true, "color": "red", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "red", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 1.0, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_2ed61758051977cc82a0ee4b07527733 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_0d01713715aa0e9b84420f7a932b348d = $(`<div id="html_0d01713715aa0e9b84420f7a932b348d" style="width: 100.0%; height: 100.0%;">Station ID: home_EV_008<br>                  Operator: Home<br>                  Sessions: 2<br>                  Energy: 75.3 kWh</div>`)[0];
+                popup_2ed61758051977cc82a0ee4b07527733.setContent(html_0d01713715aa0e9b84420f7a932b348d);
+            
+        
+
+        circle_marker_313cc55a4b4b584d58668e9b5f81c14e.bindPopup(popup_2ed61758051977cc82a0ee4b07527733)
+        ;
+
+        
+    
+    
+            var circle_marker_f4a498326b9845cfd8b1f9c3ab0d19cb = L.circleMarker(
+                [37.589381, -122.003782],
+                {"bubblingMouseEvents": true, "color": "red", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "red", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 1.0, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_08be10e3081659db8b4a1bfc380fd9be = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_0b8a85a79083f8d0a966f4d8aa6f059b = $(`<div id="html_0b8a85a79083f8d0a966f4d8aa6f059b" style="width: 100.0%; height: 100.0%;">Station ID: home_EV_009<br>                  Operator: Home<br>                  Sessions: 2<br>                  Energy: 39.7 kWh</div>`)[0];
+                popup_08be10e3081659db8b4a1bfc380fd9be.setContent(html_0b8a85a79083f8d0a966f4d8aa6f059b);
+            
+        
+
+        circle_marker_f4a498326b9845cfd8b1f9c3ab0d19cb.bindPopup(popup_08be10e3081659db8b4a1bfc380fd9be)
+        ;
+
+        
+    
+    
+            var circle_marker_79f5d20d2cfd5e6011a2be7da04cfea7 = L.circleMarker(
+                [37.360757, -122.065743],
+                {"bubblingMouseEvents": true, "color": "blue", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "blue", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_bbc6905922462acccc9c4656d325b5f7 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_98e2894463064489c8b093d5e25990a6 = $(`<div id="html_98e2894463064489c8b093d5e25990a6" style="width: 100.0%; height: 100.0%;">Station ID: ocm_123786<br>                  Operator: Powerflex<br>                  Sessions: 1<br>                  Energy: 2.2 kWh</div>`)[0];
+                popup_bbc6905922462acccc9c4656d325b5f7.setContent(html_98e2894463064489c8b093d5e25990a6);
+            
+        
+
+        circle_marker_79f5d20d2cfd5e6011a2be7da04cfea7.bindPopup(popup_bbc6905922462acccc9c4656d325b5f7)
+        ;
+
+        
+    
+    
+            var circle_marker_0bb28b998c9c7a0531a0096cf0a7c817 = L.circleMarker(
+                [37.430039, -122.147944],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_692ebf42e701225cb7da26bc40f8303f = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_2210f5f6b58b4b64d57aa4d6499562ab = $(`<div id="html_2210f5f6b58b4b64d57aa4d6499562ab" style="width: 100.0%; height: 100.0%;">Station ID: ocm_123901<br>                  Operator: Unknown<br>                  Sessions: 1<br>                  Energy: 56.0 kWh</div>`)[0];
+                popup_692ebf42e701225cb7da26bc40f8303f.setContent(html_2210f5f6b58b4b64d57aa4d6499562ab);
+            
+        
+
+        circle_marker_0bb28b998c9c7a0531a0096cf0a7c817.bindPopup(popup_692ebf42e701225cb7da26bc40f8303f)
+        ;
+
+        
+    
+    
+            var circle_marker_abbb94977b85a7f5f94139b1d3d23f50 = L.circleMarker(
+                [37.434483, -122.153366],
+                {"bubblingMouseEvents": true, "color": "purple", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "purple", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_5cb2330f86e523faadf96f25b3d4adc0 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_32dda01ca14aa9cdf9e30ab55a8f6269 = $(`<div id="html_32dda01ca14aa9cdf9e30ab55a8f6269" style="width: 100.0%; height: 100.0%;">Station ID: ocm_123907<br>                  Operator: ChargePoint<br>                  Sessions: 1<br>                  Energy: 32.2 kWh</div>`)[0];
+                popup_5cb2330f86e523faadf96f25b3d4adc0.setContent(html_32dda01ca14aa9cdf9e30ab55a8f6269);
+            
+        
+
+        circle_marker_abbb94977b85a7f5f94139b1d3d23f50.bindPopup(popup_5cb2330f86e523faadf96f25b3d4adc0)
+        ;
+
+        
+    
+    
+            var circle_marker_972c829d2778fce9a3319cf7b017d9e3 = L.circleMarker(
+                [37.372, -122.107],
+                {"bubblingMouseEvents": true, "color": "blue", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "blue", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 1.0, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_c952f2a888edee1ee1595e6f932e2acd = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_1067014503d240850ddad066702eb9fe = $(`<div id="html_1067014503d240850ddad066702eb9fe" style="width: 100.0%; height: 100.0%;">Station ID: ocm_140689<br>                  Operator: Powerflex<br>                  Sessions: 2<br>                  Energy: 124.0 kWh</div>`)[0];
+                popup_c952f2a888edee1ee1595e6f932e2acd.setContent(html_1067014503d240850ddad066702eb9fe);
+            
+        
+
+        circle_marker_972c829d2778fce9a3319cf7b017d9e3.bindPopup(popup_c952f2a888edee1ee1595e6f932e2acd)
+        ;
+
+        
+    
+    
+            var circle_marker_a721e3f95d284304bd6b34e91da0155e = L.circleMarker(
+                [37.438796, -122.134121],
+                {"bubblingMouseEvents": true, "color": "blue", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "blue", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_e58dd98b149ebf2cb86e9252d52fc80c = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_f20f072d65bfc39e6f3a4d9edc3a8f13 = $(`<div id="html_f20f072d65bfc39e6f3a4d9edc3a8f13" style="width: 100.0%; height: 100.0%;">Station ID: ocm_140753<br>                  Operator: Powerflex<br>                  Sessions: 1<br>                  Energy: 39.2 kWh</div>`)[0];
+                popup_e58dd98b149ebf2cb86e9252d52fc80c.setContent(html_f20f072d65bfc39e6f3a4d9edc3a8f13);
+            
+        
+
+        circle_marker_a721e3f95d284304bd6b34e91da0155e.bindPopup(popup_e58dd98b149ebf2cb86e9252d52fc80c)
+        ;
+
+        
+    
+    
+            var circle_marker_bc2b6cb837743ac3fba6b76885a5510e = L.circleMarker(
+                [37.769363, -122.388154],
+                {"bubblingMouseEvents": true, "color": "purple", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "purple", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_5b1f31099b7e3cf493e8ef7022cf9e9a = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_fdfd2cd243124b5168f2b10e3ac5c777 = $(`<div id="html_fdfd2cd243124b5168f2b10e3ac5c777" style="width: 100.0%; height: 100.0%;">Station ID: ocm_140922<br>                  Operator: ChargePoint<br>                  Sessions: 1<br>                  Energy: 41.7 kWh</div>`)[0];
+                popup_5b1f31099b7e3cf493e8ef7022cf9e9a.setContent(html_fdfd2cd243124b5168f2b10e3ac5c777);
+            
+        
+
+        circle_marker_bc2b6cb837743ac3fba6b76885a5510e.bindPopup(popup_5b1f31099b7e3cf493e8ef7022cf9e9a)
+        ;
+
+        
+    
+    
+            var circle_marker_5c3cca22809639a115917d2979f337a7 = L.circleMarker(
+                [37.776141, -122.388795],
+                {"bubblingMouseEvents": true, "color": "purple", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "purple", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_d30be053111df6ed99942deb0eea88d1 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_4df53d43a38ec80005dbf459353a5a58 = $(`<div id="html_4df53d43a38ec80005dbf459353a5a58" style="width: 100.0%; height: 100.0%;">Station ID: ocm_140927<br>                  Operator: ChargePoint<br>                  Sessions: 1<br>                  Energy: 34.0 kWh</div>`)[0];
+                popup_d30be053111df6ed99942deb0eea88d1.setContent(html_4df53d43a38ec80005dbf459353a5a58);
+            
+        
+
+        circle_marker_5c3cca22809639a115917d2979f337a7.bindPopup(popup_d30be053111df6ed99942deb0eea88d1)
+        ;
+
+        
+    
+    
+            var circle_marker_718a0ead5ac8f3bdf6df16244a906388 = L.circleMarker(
+                [37.384776, -122.10123],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 1.0, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_c1c0ffd9cd02ec0f552befb54020c461 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_6b1efa3a056a6a6ff403c3cbc317d125 = $(`<div id="html_6b1efa3a056a6a6ff403c3cbc317d125" style="width: 100.0%; height: 100.0%;">Station ID: ocm_159152<br>                  Operator: Unknown<br>                  Sessions: 2<br>                  Energy: 103.3 kWh</div>`)[0];
+                popup_c1c0ffd9cd02ec0f552befb54020c461.setContent(html_6b1efa3a056a6a6ff403c3cbc317d125);
+            
+        
+
+        circle_marker_718a0ead5ac8f3bdf6df16244a906388.bindPopup(popup_c1c0ffd9cd02ec0f552befb54020c461)
+        ;
+
+        
+    
+    
+            var circle_marker_cdb85d82f96da35f3c312f2edebce997 = L.circleMarker(
+                [37.533219, -122.327475],
+                {"bubblingMouseEvents": true, "color": "orange", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "orange", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_e32011ba38044fc69a6653e4671c3e05 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_1eaeca91cf930a504b701d9b8e650a7e = $(`<div id="html_1eaeca91cf930a504b701d9b8e650a7e" style="width: 100.0%; height: 100.0%;">Station ID: ocm_172010<br>                  Operator: Tesla (Tesla-only charging)<br>                  Sessions: 1<br>                  Energy: 32.8 kWh</div>`)[0];
+                popup_e32011ba38044fc69a6653e4671c3e05.setContent(html_1eaeca91cf930a504b701d9b8e650a7e);
+            
+        
+
+        circle_marker_cdb85d82f96da35f3c312f2edebce997.bindPopup(popup_e32011ba38044fc69a6653e4671c3e05)
+        ;
+
+        
+    
+    
+            var circle_marker_8ffa06f2453bdf57c53aa635b6b696bc = L.circleMarker(
+                [37.314157, -122.058058],
+                {"bubblingMouseEvents": true, "color": "blue", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "blue", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_75195275b142f66708796edea216bdba = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_724597e65c5be9d0c5b54dbc0938313a = $(`<div id="html_724597e65c5be9d0c5b54dbc0938313a" style="width: 100.0%; height: 100.0%;">Station ID: ocm_222749<br>                  Operator: Powerflex<br>                  Sessions: 1<br>                  Energy: 51.4 kWh</div>`)[0];
+                popup_75195275b142f66708796edea216bdba.setContent(html_724597e65c5be9d0c5b54dbc0938313a);
+            
+        
+
+        circle_marker_8ffa06f2453bdf57c53aa635b6b696bc.bindPopup(popup_75195275b142f66708796edea216bdba)
+        ;
+
+        
+    
+    
+            var circle_marker_2aae627c55ac43a56e0d8e94ac801581 = L.circleMarker(
+                [37.336277, -122.050489],
+                {"bubblingMouseEvents": true, "color": "blue", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "blue", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 2.0, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_d651dc86393d50c9f23f3cd8e53152a0 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_b2069dfbf3e269e279c23dbcc805e85b = $(`<div id="html_b2069dfbf3e269e279c23dbcc805e85b" style="width: 100.0%; height: 100.0%;">Station ID: ocm_222791<br>                  Operator: Powerflex<br>                  Sessions: 4<br>                  Energy: 217.4 kWh</div>`)[0];
+                popup_d651dc86393d50c9f23f3cd8e53152a0.setContent(html_b2069dfbf3e269e279c23dbcc805e85b);
+            
+        
+
+        circle_marker_2aae627c55ac43a56e0d8e94ac801581.bindPopup(popup_d651dc86393d50c9f23f3cd8e53152a0)
+        ;
+
+        
+    
+    
+            var circle_marker_a64eb27e98f4c4692140efc33faaf208 = L.circleMarker(
+                [37.812467, -122.362181],
+                {"bubblingMouseEvents": true, "color": "green", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "green", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_7594ee3f46ed7b0d96ee3b68ce62f036 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_91c3f835494e5c212347d69ef6e73be0 = $(`<div id="html_91c3f835494e5c212347d69ef6e73be0" style="width: 100.0%; height: 100.0%;">Station ID: ocm_223339<br>                  Operator: Unknown<br>                  Sessions: 1<br>                  Energy: 56.6 kWh</div>`)[0];
+                popup_7594ee3f46ed7b0d96ee3b68ce62f036.setContent(html_91c3f835494e5c212347d69ef6e73be0);
+            
+        
+
+        circle_marker_a64eb27e98f4c4692140efc33faaf208.bindPopup(popup_7594ee3f46ed7b0d96ee3b68ce62f036)
+        ;
+
+        
+    
+    
+            var circle_marker_a940de985b614d27587163d5504315ca = L.circleMarker(
+                [37.79966, -122.25313],
+                {"bubblingMouseEvents": true, "color": "darkred", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "darkred", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_1207af70925577f5943dab39397d99ac = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_86b1555290150b9551679cbacfcfe921 = $(`<div id="html_86b1555290150b9551679cbacfcfe921" style="width: 100.0%; height: 100.0%;">Station ID: ocm_244595<br>                  Operator: Electrify America<br>                  Sessions: 1<br>                  Energy: 55.5 kWh</div>`)[0];
+                popup_1207af70925577f5943dab39397d99ac.setContent(html_86b1555290150b9551679cbacfcfe921);
+            
+        
+
+        circle_marker_a940de985b614d27587163d5504315ca.bindPopup(popup_1207af70925577f5943dab39397d99ac)
+        ;
+
+        
+    
+    
+            var circle_marker_5c0ec4c07e40436f614b77c5d89c4672 = L.circleMarker(
+                [37.380061, -122.073571],
+                {"bubblingMouseEvents": true, "color": "lightred", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "lightred", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_b3a5fc32aa13614518477f09c1de0b59 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_864c67cab81656ee81a0ca6549004f60 = $(`<div id="html_864c67cab81656ee81a0ca6549004f60" style="width: 100.0%; height: 100.0%;">Station ID: ocm_262617<br>                  Operator: EV Connect<br>                  Sessions: 1<br>                  Energy: 55.4 kWh</div>`)[0];
+                popup_b3a5fc32aa13614518477f09c1de0b59.setContent(html_864c67cab81656ee81a0ca6549004f60);
+            
+        
+
+        circle_marker_5c0ec4c07e40436f614b77c5d89c4672.bindPopup(popup_b3a5fc32aa13614518477f09c1de0b59)
+        ;
+
+        
+    
+    
+            var circle_marker_9fd9e049f2a1319e1bb94e340e4132a8 = L.circleMarker(
+                [37.367212, -122.033401],
+                {"bubblingMouseEvents": true, "color": "beige", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "beige", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_51edd81d6c4236908a94d674986b0e4e = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_bccfc371a300870abed29411c1aff2b4 = $(`<div id="html_bccfc371a300870abed29411c1aff2b4" style="width: 100.0%; height: 100.0%;">Station ID: ocm_276173<br>                  Operator: eVgo Network<br>                  Sessions: 1<br>                  Energy: 60.8 kWh</div>`)[0];
+                popup_51edd81d6c4236908a94d674986b0e4e.setContent(html_bccfc371a300870abed29411c1aff2b4);
+            
+        
+
+        circle_marker_9fd9e049f2a1319e1bb94e340e4132a8.bindPopup(popup_51edd81d6c4236908a94d674986b0e4e)
+        ;
+
+        
+    
+    
+            var circle_marker_f0f275963b3124a1047e88d74b380a38 = L.circleMarker(
+                [37.67671, -122.38543],
+                {"bubblingMouseEvents": true, "color": "purple", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "purple", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 2.0, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_d6e7bafc679f80027a5895afa648afc5 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_640ecbf8b20912d2f530dc6c4daf8492 = $(`<div id="html_640ecbf8b20912d2f530dc6c4daf8492" style="width: 100.0%; height: 100.0%;">Station ID: ocm_276256<br>                  Operator: ChargePoint<br>                  Sessions: 4<br>                  Energy: 189.0 kWh</div>`)[0];
+                popup_d6e7bafc679f80027a5895afa648afc5.setContent(html_640ecbf8b20912d2f530dc6c4daf8492);
+            
+        
+
+        circle_marker_f0f275963b3124a1047e88d74b380a38.bindPopup(popup_d6e7bafc679f80027a5895afa648afc5)
+        ;
+
+        
+    
+    
+            var circle_marker_6692713bae219a07086fa5561115a2aa = L.circleMarker(
+                [37.357961, -122.024483],
+                {"bubblingMouseEvents": true, "color": "beige", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "beige", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_e1487c05eb17670d42d58b3f3e20d4b8 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_27f9a8b767c862964a5a4e0f3817f798 = $(`<div id="html_27f9a8b767c862964a5a4e0f3817f798" style="width: 100.0%; height: 100.0%;">Station ID: ocm_282068<br>                  Operator: eVgo Network<br>                  Sessions: 1<br>                  Energy: 64.1 kWh</div>`)[0];
+                popup_e1487c05eb17670d42d58b3f3e20d4b8.setContent(html_27f9a8b767c862964a5a4e0f3817f798);
+            
+        
+
+        circle_marker_6692713bae219a07086fa5561115a2aa.bindPopup(popup_e1487c05eb17670d42d58b3f3e20d4b8)
+        ;
+
+        
+    
+    
+            var circle_marker_21a78bdb48e7400dc1c4f2353ceb3989 = L.circleMarker(
+                [37.339571, -122.061186],
+                {"bubblingMouseEvents": true, "color": "purple", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "purple", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_642fe14b7fa520dfc6857622a49f01a9 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_0a2d01da21f3bffe3930a22f13c31d09 = $(`<div id="html_0a2d01da21f3bffe3930a22f13c31d09" style="width: 100.0%; height: 100.0%;">Station ID: ocm_337772<br>                  Operator: ChargePoint<br>                  Sessions: 1<br>                  Energy: 16.4 kWh</div>`)[0];
+                popup_642fe14b7fa520dfc6857622a49f01a9.setContent(html_0a2d01da21f3bffe3930a22f13c31d09);
+            
+        
+
+        circle_marker_21a78bdb48e7400dc1c4f2353ceb3989.bindPopup(popup_642fe14b7fa520dfc6857622a49f01a9)
+        ;
+
+        
+    
+    
+            var circle_marker_5e604200ebfcb335d1a9efdcc66f6a56 = L.circleMarker(
+                [37.378474, -122.075627],
+                {"bubblingMouseEvents": true, "color": "beige", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "beige", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_dec0368ca46902d5d52a2055b6b7080b = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_023240eae9c0b7ef18c46a51a2ab8a16 = $(`<div id="html_023240eae9c0b7ef18c46a51a2ab8a16" style="width: 100.0%; height: 100.0%;">Station ID: ocm_338013<br>                  Operator: eVgo Network<br>                  Sessions: 1<br>                  Energy: 55.3 kWh</div>`)[0];
+                popup_dec0368ca46902d5d52a2055b6b7080b.setContent(html_023240eae9c0b7ef18c46a51a2ab8a16);
+            
+        
+
+        circle_marker_5e604200ebfcb335d1a9efdcc66f6a56.bindPopup(popup_dec0368ca46902d5d52a2055b6b7080b)
+        ;
+
+        
+    
+    
+            var circle_marker_1460016e0886c0748902bf4260f287a8 = L.circleMarker(
+                [37.446604, -122.158451],
+                {"bubblingMouseEvents": true, "color": "darkblue", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "darkblue", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_7e83aaae460ab1fd7b4de99546e1fd86 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_888a49cae69427f0528fca0612243e65 = $(`<div id="html_888a49cae69427f0528fca0612243e65" style="width: 100.0%; height: 100.0%;">Station ID: ocm_338652<br>                  Operator: Blink Charging<br>                  Sessions: 1<br>                  Energy: 53.2 kWh</div>`)[0];
+                popup_7e83aaae460ab1fd7b4de99546e1fd86.setContent(html_888a49cae69427f0528fca0612243e65);
+            
+        
+
+        circle_marker_1460016e0886c0748902bf4260f287a8.bindPopup(popup_7e83aaae460ab1fd7b4de99546e1fd86)
+        ;
+
+        
+    
+    
+            var circle_marker_8836f191ae452f017995d5dd3a37c4b7 = L.circleMarker(
+                [37.78486, -122.271749],
+                {"bubblingMouseEvents": true, "color": "beige", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "beige", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_ad828038427b36a8a443f8ab812c1da0 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_dd3a3c98881ddf221e3dba8c7b50bdf5 = $(`<div id="html_dd3a3c98881ddf221e3dba8c7b50bdf5" style="width: 100.0%; height: 100.0%;">Station ID: ocm_340422<br>                  Operator: eVgo Network<br>                  Sessions: 1<br>                  Energy: 52.8 kWh</div>`)[0];
+                popup_ad828038427b36a8a443f8ab812c1da0.setContent(html_dd3a3c98881ddf221e3dba8c7b50bdf5);
+            
+        
+
+        circle_marker_8836f191ae452f017995d5dd3a37c4b7.bindPopup(popup_ad828038427b36a8a443f8ab812c1da0)
+        ;
+
+        
+    
+    
+            var circle_marker_d6480a4529d372615bacc43aa280109a = L.circleMarker(
+                [37.866973, -122.267239],
+                {"bubblingMouseEvents": true, "color": "darkgreen", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "darkgreen", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_98317af62664c3a2f55873eec6a7b4bf = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_9a0121f1fc20f911d4c28ca1dc804ed9 = $(`<div id="html_9a0121f1fc20f911d4c28ca1dc804ed9" style="width: 100.0%; height: 100.0%;">Station ID: ocm_340762<br>                  Operator: EVCS<br>                  Sessions: 1<br>                  Energy: 57.3 kWh</div>`)[0];
+                popup_98317af62664c3a2f55873eec6a7b4bf.setContent(html_9a0121f1fc20f911d4c28ca1dc804ed9);
+            
+        
+
+        circle_marker_d6480a4529d372615bacc43aa280109a.bindPopup(popup_98317af62664c3a2f55873eec6a7b4bf)
+        ;
+
+        
+    
+    
+            var circle_marker_cefcf43bb541486897fd8a5189dbfb19 = L.circleMarker(
+                [37.867469, -122.260082],
+                {"bubblingMouseEvents": true, "color": "purple", "dashArray": null, "dashOffset": null, "fill": true, "fillColor": "purple", "fillOpacity": 0.7, "fillRule": "evenodd", "lineCap": "round", "lineJoin": "round", "opacity": 1.0, "radius": 0.5, "stroke": true, "weight": 3}
+            ).addTo(map_9aedbfca804425a8c9b7ee08ab10ec7e);
+        
+    
+        var popup_5c576bbbddb10491270c8dce89b7589c = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_62b898ab46d27512a3bf0132daf30b39 = $(`<div id="html_62b898ab46d27512a3bf0132daf30b39" style="width: 100.0%; height: 100.0%;">Station ID: ocm_71401<br>                  Operator: ChargePoint<br>                  Sessions: 1<br>                  Energy: 8.2 kWh</div>`)[0];
+                popup_5c576bbbddb10491270c8dce89b7589c.setContent(html_62b898ab46d27512a3bf0132daf30b39);
+            
+        
+
+        circle_marker_cefcf43bb541486897fd8a5189dbfb19.bindPopup(popup_5c576bbbddb10491270c8dce89b7589c)
+        ;
+
+        
+    
+</script>
+</html>
