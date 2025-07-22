@@ -59,6 +59,50 @@ DRIVING_STYLES = {
     }
 }
 
+# Driver personality traits for charging behavior
+DRIVER_PERSONALITIES = {
+    'anxious': {
+        'charge_threshold': 0.5,      # Charge at 50% SOC
+        'target_soc_home': 0.95,      # Charge to 95% at home
+        'target_soc_public': 0.85,    # Charge to 85% at public stations
+        'cost_sensitivity': 0.3,      # Low cost sensitivity (0-1 scale)
+        'convenience_weight': 0.7,    # High convenience preference
+        'max_detour_km': 2.0,        # Won't go far for charging
+        'emergency_threshold': 0.3,   # Panic mode at 30%
+        'proportion': 0.2
+    },
+    'optimizer': {
+        'charge_threshold': 0.25,     # Wait until 25%
+        'target_soc_home': 0.85,      # Optimal home charging
+        'target_soc_public': 0.80,    # Don't overcharge in public
+        'cost_sensitivity': 0.8,      # High cost sensitivity
+        'convenience_weight': 0.2,    # Will travel for savings
+        'max_detour_km': 8.0,        # Will detour for better prices
+        'emergency_threshold': 0.15,  # Comfortable with low SOC
+        'proportion': 0.3
+    },
+    'convenience': {
+        'charge_threshold': 0.35,     # Moderate threshold
+        'target_soc_home': 0.90,      # High home charging
+        'target_soc_public': 0.85,    # High public charging
+        'cost_sensitivity': 0.2,      # Low cost sensitivity
+        'convenience_weight': 0.8,    # Prioritize convenience
+        'max_detour_km': 3.0,        # Minimal detour tolerance
+        'emergency_threshold': 0.25,  # Moderate emergency threshold
+        'proportion': 0.25
+    },
+    'procrastinator': {
+        'charge_threshold': 0.15,     # Waits until 15%!
+        'target_soc_home': 0.95,      # Then charges fully
+        'target_soc_public': 0.90,    # Charges fully in public too
+        'cost_sensitivity': 0.5,      # Moderate cost sensitivity
+        'convenience_weight': 0.6,    # Moderate convenience preference
+        'max_detour_km': 5.0,        # Moderate detour tolerance
+        'emergency_threshold': 0.10,  # Very low emergency threshold
+        'proportion': 0.25
+    }
+}
+
 class SyntheticEVGenerator:
     def __init__(self, config_override: Optional[Dict] = None):
         """Initialize the synthetic EV data generator"""
@@ -118,6 +162,15 @@ class SyntheticEVGenerator:
         
         return base_config
 
+    # Add this method after _select_driving_style() (around line 180)
+
+    def _select_driver_personality(self) -> str:
+        """Select driver personality based on proportions"""
+        personalities = list(DRIVER_PERSONALITIES.keys())
+        weights = [DRIVER_PERSONALITIES[personality]['proportion'] for personality in personalities]
+        return np.random.choice(personalities, p=weights)
+
+
     def generate_fleet_vehicles(self) -> List[Dict]:
         """Generate fleet of vehicles with realistic characteristics"""
         info("Generating fleet vehicles...", "synthetic_ev_generator")
@@ -146,7 +199,9 @@ class SyntheticEVGenerator:
             
             # 🔧 FIX: More realistic starting SOC distribution
             starting_soc = self._generate_realistic_starting_soc(driver_profile, has_home_charging)
-            
+
+            driver_personality = self._select_driver_personality()
+
             # Generate vehicle-specific characteristics
             vehicle = {
                 'vehicle_id': f'EV_{vehicle_id:03d}',
@@ -156,6 +211,7 @@ class SyntheticEVGenerator:
                 'max_charging_speed': model_specs['max_charging_speed'],
                 'driver_profile': driver_profile,
                 'driving_style': driving_style,
+                'driver_personality': driver_personality,
                 'has_home_charging': has_home_charging,
                 'home_location': self._generate_home_location(),
                 'current_battery_soc': starting_soc,  # Start with random charge
@@ -1270,6 +1326,92 @@ class SyntheticEVGenerator:
         else:
             return 'autumn'
     
+    # Add this method after _generate_break_duration() (around line 350)
+
+    def _should_charge_enhanced(self, vehicle: Dict, current_soc: float, 
+                            location: Tuple[float, float], current_time: datetime) -> Dict:
+        """
+        Enhanced charging decision based on driver personality
+        Returns: {
+            'should_charge': bool,
+            'urgency': str,  # 'low', 'medium', 'high', 'emergency'
+            'target_soc': float,
+            'max_acceptable_cost': float,
+            'max_detour_km': float
+        }
+        """
+        personality = DRIVER_PERSONALITIES[vehicle['driver_personality']]
+        driving_style = DRIVING_STYLES[vehicle['driving_style']]
+        
+        # Base charging threshold from personality
+        base_threshold = personality['charge_threshold']
+        emergency_threshold = personality['emergency_threshold']
+        
+        # Modify threshold based on context
+        # Time of day factor (more anxious in evening)
+        hour = current_time.hour
+        if 18 <= hour <= 22:  # Evening hours
+            time_modifier = 0.05  # Charge 5% earlier
+        elif 22 <= hour or hour <= 6:  # Night/early morning
+            time_modifier = 0.1   # Charge 10% earlier
+        else:
+            time_modifier = 0.0
+        
+        # Weekend factor (more relaxed on weekends)
+        is_weekend = current_time.weekday() >= 5
+        weekend_modifier = -0.05 if is_weekend else 0.0
+        
+        # Apply personality variation (some randomness)
+        personality_variation = np.random.normal(0, 0.03)  # ±3% variation
+        
+        # Calculate final threshold
+        final_threshold = base_threshold + time_modifier + weekend_modifier + personality_variation
+        final_threshold = np.clip(final_threshold, 0.1, 0.8)  # Keep reasonable bounds
+        
+        # Determine if charging is needed
+        should_charge = current_soc <= final_threshold
+        
+        # Determine urgency level
+        if current_soc <= emergency_threshold:
+            urgency = 'emergency'
+        elif current_soc <= final_threshold - 0.05:
+            urgency = 'high'
+        elif current_soc <= final_threshold + 0.05:
+            urgency = 'medium'
+        else:
+            urgency = 'low'
+        
+        # Determine target SOC based on location and personality
+        is_at_home = self._is_near_home(location, vehicle['home_location'])
+        if is_at_home:
+            target_soc = personality['target_soc_home']
+        else:
+            target_soc = personality['target_soc_public']
+        
+        # Add some variation to target SOC
+        target_variation = np.random.normal(0, 0.02)  # ±2% variation
+        target_soc = np.clip(target_soc + target_variation, current_soc + 0.1, 1.0)
+        
+        # Calculate acceptable cost based on urgency and personality
+        base_acceptable_cost = 0.4  # Base $/kWh
+        cost_sensitivity = personality['cost_sensitivity']
+        
+        if urgency == 'emergency':
+            max_acceptable_cost = base_acceptable_cost * 2.0  # Will pay double in emergency
+        elif urgency == 'high':
+            max_acceptable_cost = base_acceptable_cost * (1.5 - cost_sensitivity * 0.3)
+        else:
+            max_acceptable_cost = base_acceptable_cost * (1.2 - cost_sensitivity * 0.4)
+        
+        return {
+            'should_charge': should_charge,
+            'urgency': urgency,
+            'target_soc': target_soc,
+            'max_acceptable_cost': max_acceptable_cost,
+            'max_detour_km': personality['max_detour_km'],
+            'final_threshold_used': final_threshold
+        }
+
 
     def generate_charging_sessions(self, vehicle: Dict, routes: List[Dict], date: datetime) -> List[Dict]:
         """Generate realistic charging sessions - SIMPLIFIED for optimization focus"""
@@ -1327,9 +1469,12 @@ class SyntheticEVGenerator:
             # Ensure SOC doesn't go negative
             current_soc = max(0.05, current_soc)  # Minimum 5% to avoid complete drain
             
-            # Check if charging is needed
-            needs_charging = current_soc < charging_threshold
-            
+            charging_decision = self._should_charge_enhanced(
+                vehicle, current_soc, route['destination'], route_end_time
+            )
+            needs_charging = charging_decision['should_charge']
+            urgency = charging_decision['urgency']
+            target_soc = charging_decision['target_soc']
             # Opportunistic charging logic (less likely if has home charging)
             opportunistic_prob = 0.1 if vehicle['has_home_charging'] else 0.3
             opportunistic_charging = (
@@ -1339,6 +1484,11 @@ class SyntheticEVGenerator:
             )
             
             if needs_charging or opportunistic_charging:
+                # Determine where we're going next
+                if route_idx < len(routes) - 1:
+                    next_destination = routes[route_idx + 1]['destination']
+                else:
+                    next_destination = vehicle['home_location']
                 # Determine charging type based on location and time
                 is_at_home = self._is_near_home(route['destination'], vehicle['home_location'])
                 
@@ -1355,7 +1505,7 @@ class SyntheticEVGenerator:
                     charging_start_time = route_end_time + timedelta(minutes=travel_to_station_minutes)
                     
                     charging_session = self._generate_public_charging_session_with_infrastructure(
-                        vehicle, route['destination'], charging_start_time, current_soc, needs_charging
+                        vehicle, route['destination'], charging_start_time, current_soc, needs_charging,next_destination
                     )
                 
                 if charging_session:
@@ -1477,86 +1627,10 @@ class SyntheticEVGenerator:
 
 
 
-    def _generate_public_charging_session(self, vehicle: Dict, location: Tuple[float, float],
-                                    start_time: datetime, start_soc: float, 
-                                    is_emergency: bool) -> Optional[Dict]:
-        """Generate public charging session with proper timing context"""
-        
-        # Find nearby charging stations
-        nearby_stations = self._find_nearby_charging_stations(location, radius_km=10)
-        
-        if not nearby_stations:
-            return None
-        
-        # Select charging station
-        selected_station = self._select_charging_station(
-            nearby_stations, vehicle, is_emergency
-        )
-        
-        # Determine charging parameters
-        if is_emergency:
-            # Emergency charging - charge to 80%
-            target_soc = 0.8
-            charging_power = min(
-                selected_station.get('max_power_kw', 50),
-                vehicle['max_charging_speed']
-            )
-        else:
-            # Opportunistic charging - partial charge
-            target_soc = np.random.uniform(0.6, 0.8)
-            charging_power = min(
-                selected_station.get('max_power_kw', 22),
-                vehicle['max_charging_speed']
-            ) * 0.8  # Don't always use max power
-        
-        battery_capacity = vehicle['battery_capacity']
-        energy_needed = max(0, (target_soc - start_soc) * battery_capacity)
-        
-        # Calculate charging time
-        charging_time_hours = self._calculate_charging_time(
-            energy_needed, charging_power, start_soc, target_soc
-        )
-        
-        # FIXED: Proper peak/off-peak pricing based on actual charging time
-        station_base_cost = selected_station.get('cost_usd_per_kwh', 0.30)
-        
-        # Ensure station base cost represents OFF-PEAK pricing
-        off_peak_cost = np.clip(station_base_cost, 0.20, 0.40)
-        
-        # Peak hour pricing logic - use actual charging start time
-        peak_hours = self.config['charging']['peak_hours']
-        is_peak_hour = any(start <= start_time.hour <= end for start, end in peak_hours)
-        
-        if is_peak_hour:
-            cost_per_kwh = off_peak_cost * self.config['charging']['peak_pricing_multiplier']
-        else:
-            cost_per_kwh = off_peak_cost
-        
-        total_cost = energy_needed * cost_per_kwh
-        
-        return {
-            'session_id': f"{vehicle['vehicle_id']}_{start_time.strftime('%Y%m%d_%H%M')}_public",
-            'vehicle_id': vehicle['vehicle_id'],
-            'charging_type': 'public',
-            'station_id': selected_station.get('ocm_id', 'unknown'),
-            'station_operator': selected_station.get('operator', 'Unknown'),
-            'location': f"({float(selected_station.get('latitude', 0)):.6f}, {float(selected_station.get('longitude', 0)):.6f})",
-            'start_time': start_time.isoformat(),
-            'end_time': (start_time + timedelta(hours=charging_time_hours)).isoformat(),
-            'start_soc': round(start_soc, 3),
-            'end_soc': round(target_soc, 3),
-            'energy_delivered_kwh': round(energy_needed, 2),
-            'charging_power_kw': charging_power,
-            'duration_hours': round(charging_time_hours, 2),
-            'cost_usd': round(total_cost, 2),
-            'cost_per_kwh': round(cost_per_kwh, 3),
-            'is_emergency_charging': is_emergency,
-            'connector_type': selected_station.get('connector_types', ['Unknown'])[0]
-        }
 
     def _generate_public_charging_session_with_infrastructure(self, vehicle: Dict, location: Tuple[float, float],
                                                         start_time: datetime, start_soc: float, 
-                                                        is_emergency: bool) -> Optional[Dict]:
+                                                        is_emergency: bool,next_destination: Tuple[float, float] = None) -> Optional[Dict]:
         """Generate public charging session using infrastructure manager - SIMPLIFIED"""
         
         # Find nearby charging stations using infrastructure manager
@@ -1579,31 +1653,46 @@ class SyntheticEVGenerator:
         if not available_stations:
             warning(f"No operational charging stations near {location} for {vehicle['vehicle_id']}", "synthetic_ev_generator")
             return None
+
+        # Create charging decision based on personality
+        charging_decision = {
+            'urgency': 'emergency' if is_emergency else 'medium',
+            'max_acceptable_cost': 0.50 if is_emergency else 0.35,
+            'max_detour_km': DRIVER_PERSONALITIES[vehicle['driver_personality']]['max_detour_km']
+        }
+        destination_for_detour = next_destination or vehicle['home_location']
+        # Now select station with personality
+        selected_station = self._select_station_with_personality(
+            available_stations, vehicle, charging_decision,location,destination_for_detour
+        )     
+
         
-        # SIMPLIFIED: Select station using simple distance + cost logic
-        selected_station = self._select_station_simple(available_stations, vehicle, is_emergency)
         
         if not selected_station:
             return None
         
         # Determine charging parameters
+        personality = DRIVER_PERSONALITIES[vehicle['driver_personality']]
+
         if is_emergency:
             # Emergency charging - charge to 80%
-            target_soc = 0.8
-            charging_power = min(
-                selected_station.get('max_power_kw', 50),
-                vehicle['max_charging_speed']
-            )
+            target_soc = personality['target_soc_public']
         else:
             # Opportunistic charging - partial charge
-            target_soc = np.random.uniform(0.6, 0.8)
-            charging_power = min(
-                selected_station.get('max_power_kw', 22),
-                vehicle['max_charging_speed']
-            ) * 0.8  # Don't always use max power
+            target_soc = personality['target_soc_public'] * np.random.uniform(0.7, 0.9)
         
         battery_capacity = vehicle['battery_capacity']
         energy_needed = max(0, (target_soc - start_soc) * battery_capacity)
+        # Determine charging power based on station and vehicle capabilities
+        station_max_power = selected_station.get('max_power_kw', 22)  # Default 22kW
+        vehicle_max_power = vehicle.get('max_charging_speed', 50)     # Vehicle limit
+        charging_power = min(station_max_power, vehicle_max_power)
+
+        # Apply urgency factor (emergency = use max power, normal = maybe slower)
+        if not is_emergency:
+            # Sometimes use lower power for cost savings or availability
+            charging_power *= np.random.uniform(0.7, 1.0)
+
         
         # Calculate charging time
         charging_time_hours = self._calculate_charging_time(
@@ -1681,7 +1770,121 @@ class SyntheticEVGenerator:
             return min(stations, key=simple_score)
 
 
+    def _calculate_actual_detour(self, current_location: Tuple[float, float], 
+                           destination: Tuple[float, float], 
+                           station_location: Tuple[float, float]) -> float:
+        """
+        Calculate actual detour distance for charging station
+        Returns: detour in km (0 if station is on the way)
+        """
+        from geopy.distance import geodesic
+        
+        # Direct distance to destination
+        direct_distance = geodesic(current_location, destination).kilometers
+        
+        # Distance via charging station
+        to_station = geodesic(current_location, station_location).kilometers
+        from_station = geodesic(station_location, destination).kilometers
+        via_station_distance = to_station + from_station
+        
+        # Actual detour (can be negative if station is very close to direct path)
+        detour = via_station_distance - direct_distance
+        
+        # Return 0 if detour is minimal (within 0.5km tolerance)
+        return max(0, detour - 0.5)
 
+
+    # Update _select_station_with_personality() to use proper detour calculation:
+
+    def _select_station_with_personality(self, stations: List[Dict], vehicle: Dict, 
+                                    charging_decision: Dict, 
+                                    current_location: Tuple[float, float] = None,
+                                    destination: Tuple[float, float] = None) -> Optional[Dict]:
+        """
+        Select charging station based on driver personality and charging urgency
+        """
+        if not stations:
+            return None
+        
+        personality = DRIVER_PERSONALITIES[vehicle['driver_personality']]
+        urgency = charging_decision['urgency']
+        max_cost = charging_decision['max_acceptable_cost']
+        max_detour = charging_decision['max_detour_km']
+        
+        # Filter stations by detour and cost constraints
+        acceptable_stations = []
+        for station in stations:
+            # Calculate actual detour if we have route information
+            if current_location and destination:
+                station_location = (station.get('latitude', 0), station.get('longitude', 0))
+                actual_detour = self._calculate_actual_detour(current_location, destination, station_location)
+            else:
+                # Fallback to simple distance
+                actual_detour = station.get('distance_km', 0)
+            
+            cost_per_kwh = station.get('estimated_cost_per_kwh', 0.30)
+            
+            # Check detour constraint
+            if actual_detour > max_detour:
+                continue
+            
+            # Check cost constraint (unless emergency)
+            if urgency != 'emergency' and cost_per_kwh > max_cost:
+                continue
+            
+            # Add calculated detour to station data for scoring
+            station['actual_detour_km'] = actual_detour
+            acceptable_stations.append(station)
+        
+        if not acceptable_stations:
+            # If no stations meet criteria, relax constraints based on urgency
+            if urgency in ['high', 'emergency']:
+                # Accept any station within reasonable distance
+                for station in stations:
+                    if current_location and destination:
+                        station_location = (station.get('latitude', 0), station.get('longitude', 0))
+                        actual_detour = self._calculate_actual_detour(current_location, destination, station_location)
+                    else:
+                        actual_detour = station.get('distance_km', 0)
+                    
+                    if actual_detour <= max_detour * 1.5:
+                        station['actual_detour_km'] = actual_detour
+                        acceptable_stations.append(station)
+            
+            if not acceptable_stations:
+                # Last resort: closest station
+                return min(stations, key=lambda x: x.get('distance_km', 999))
+        
+        # Score remaining stations based on personality
+        def calculate_station_score(station):
+            detour_km = station.get('actual_detour_km', station.get('distance_km', 0))
+            cost_per_kwh = station.get('estimated_cost_per_kwh', 0.30)
+            max_power_kw = station.get('max_power_kw', 22)
+            
+            # Detour penalty (higher weight for convenience-focused personalities)
+            detour_penalty = detour_km * personality['convenience_weight'] * 3
+            
+            # Cost penalty (higher weight for cost-sensitive personalities)
+            cost_penalty = (cost_per_kwh - 0.25) * personality['cost_sensitivity'] * 10
+            
+            # Speed bonus (faster charging is generally preferred)
+            speed_bonus = min(max_power_kw / 50, 1.0) * 2
+            
+            # Urgency modifier
+            if urgency == 'emergency':
+                detour_penalty *= 2
+                cost_penalty *= 0.5
+                speed_bonus *= 2
+            elif urgency == 'high':
+                detour_penalty *= 1.5
+                cost_penalty *= 0.7
+            
+            total_score = detour_penalty + cost_penalty - speed_bonus
+            return total_score
+        
+        # Select station with best score
+        best_station = min(acceptable_stations, key=calculate_station_score)
+        return best_station
 
 
 
