@@ -57,7 +57,7 @@ TESTING_LOGGING = {
 # =============================================================================
 
 # Change this to switch logging modes
-CURRENT_LOGGING_MODE = 'DEVELOPMENT'  # Options: PRODUCTION, DEVELOPMENT, DEBUG, SILENT, TESTING
+CURRENT_LOGGING_MODE = 'DEBUG'  # Options: PRODUCTION, DEVELOPMENT, DEBUG, SILENT, TESTING
 
 # =============================================================================
 # MODULE-SPECIFIC LOGGING
@@ -80,7 +80,7 @@ MODULE_LOGGING = {
 DETAILED_LOGGING_COMPONENTS = {
     'energy_calculation': False,  # Very verbose energy calculations
     'route_generation': False,    # Route generation details
-    'charging_sessions': False,   # Charging session details
+    'charging_sessions': True,    # Charging session details
     'infrastructure': False,      # Infrastructure management
     'gps_trace': False           # GPS trace generation
 }

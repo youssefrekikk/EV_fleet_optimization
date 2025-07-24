@@ -136,7 +136,7 @@ class SyntheticEVGenerator:
 
         
         # Initialize random seed for reproducibility and testing remove when generating final data
-        np.random.seed(42)
+        #np.random.seed(42)
         
         info("Synthetic EV Generator initialized", "synthetic_ev_generator")
 
@@ -1735,7 +1735,7 @@ class SyntheticEVGenerator:
                 target_soc_variation *= np.random.uniform(0.6, 0.8)
         
         target_soc = min(0.95, base_target * target_soc_variation)  # Cap at 95%
-        target_soc = max(0.3, target_soc)  # Floor at 30% for minimum usability
+        target_soc = max(start_soc + 0.05, target_soc)  # Floor at 30% for minimum usability
         
         energy_needed = max(0, (target_soc - start_soc) * battery_capacity)
         
@@ -1858,7 +1858,7 @@ class SyntheticEVGenerator:
                 target_soc *= np.random.uniform(0.7, 0.9)  # Charge less due to cost
         
         # Ensure reasonable bounds
-        target_soc = max(0.25, min(0.95, target_soc))
+        target_soc = max(start_soc + 0.05, min(0.95, target_soc))   
         
         battery_capacity = vehicle['battery_capacity']
         energy_needed = max(0, (target_soc - start_soc) * battery_capacity)
@@ -2188,7 +2188,13 @@ class SyntheticEVGenerator:
         return datasets
 
     def _validate_charging_session_simple(self, session: Dict) -> bool:
-        """Simple validation for charging session data"""
+        """Simple validation for charging session data with detailed logging"""
+        
+        from src.utils.logger import log_detailed, debug
+        
+        session_id = session.get('session_id', 'unknown')
+        log_detailed(f"🔍 VALIDATING SESSION: {session_id}", "charging_sessions")
+        log_detailed(f"  Session data: {session}", "charging_sessions")
         
         required_fields = [
             'session_id', 'vehicle_id', 'charging_type', 'start_time', 'end_time',
@@ -2198,25 +2204,41 @@ class SyntheticEVGenerator:
         # Check required fields exist and are not None
         for field in required_fields:
             if field not in session or session[field] is None:
+                log_detailed(f"❌ VALIDATION FAILED - Missing/None field: {field}", "charging_sessions")
                 return False
+        
+        log_detailed("✅ All required fields present", "charging_sessions")
         
         # Basic range checks
         try:
             # SOC should be between 0 and 1
-            if not (0 <= session['start_soc'] <= 1 and 0 <= session['end_soc'] <= 1):
+            start_soc = session['start_soc']
+            end_soc = session['end_soc']
+            log_detailed(f"  SOC Check: start={start_soc}, end={end_soc}", "charging_sessions")
+            
+            if not (0 <= start_soc <= 1 and 0 <= end_soc <= 1):
+                log_detailed(f"❌ VALIDATION FAILED - SOC out of range: start={start_soc}, end={end_soc}", "charging_sessions")
                 return False
             
             # End SOC should be greater than start SOC
-            if session['end_soc'] <= session['start_soc']:
+            if end_soc <= start_soc:
+                log_detailed(f"❌ VALIDATION FAILED - end_soc ({end_soc}) <= start_soc ({start_soc})", "charging_sessions")
                 return False
             
             # Energy and cost should be positive
-            if session['energy_delivered_kwh'] <= 0 or session['cost_usd'] < 0:
+            energy = session['energy_delivered_kwh']
+            cost = session['cost_usd']
+            log_detailed(f"  Energy/Cost Check: energy={energy}, cost={cost}", "charging_sessions")
+            
+            if energy <= 0 or cost < 0:
+                log_detailed(f"❌ VALIDATION FAILED - Invalid energy/cost: energy={energy}, cost={cost}", "charging_sessions")
                 return False
             
+            log_detailed("✅ SESSION VALIDATION PASSED", "charging_sessions")
             return True
             
-        except Exception:
+        except Exception as e:
+            log_detailed(f"❌ VALIDATION FAILED - Exception: {e}", "charging_sessions")
             return False
 
     def _create_infrastructure_datasets_simple(self) -> Dict[str, pd.DataFrame]:
@@ -2416,8 +2438,8 @@ def main():
     
     # Configuration override for testing
     config_override = {
-        'fleet': {'fleet_size': 10},  # Smaller fleet for testing
-        'simulation': {'simulation_days': 7}  # One week of data
+        'fleet': {'fleet_size':15},  # Smaller fleet for testing
+        'simulation': {'simulation_days': 10}  # One week of data
     }
     
     # Initialize generator
