@@ -59,7 +59,7 @@ DRIVING_STYLES = {
     }
 }
 
-# Driver personality traits for charging behavior
+# 🔧 FIX: Driver personality traits with realistic emergency thresholds
 DRIVER_PERSONALITIES = {
     'anxious': {
         'charge_threshold': 0.5,      # Charge at 50% SOC
@@ -68,7 +68,7 @@ DRIVER_PERSONALITIES = {
         'cost_sensitivity': 0.3,      # Low cost sensitivity (0-1 scale)
         'convenience_weight': 0.7,    # High convenience preference
         'max_detour_km': 2.0,        # Won't go far for charging
-        'emergency_threshold': 0.3,   # Panic mode at 30%
+        'emergency_threshold': 0.20,  # 🔧 FIX: Panic mode at 20% (was 30%)
         'proportion': 0.2
     },
     'optimizer': {
@@ -78,7 +78,7 @@ DRIVER_PERSONALITIES = {
         'cost_sensitivity': 0.8,      # High cost sensitivity
         'convenience_weight': 0.2,    # Will travel for savings
         'max_detour_km': 8.0,        # Will detour for better prices
-        'emergency_threshold': 0.15,  # Comfortable with low SOC
+        'emergency_threshold': 0.12,  # 🔧 FIX: Comfortable with low SOC (was 15%)
         'proportion': 0.3
     },
     'convenience': {
@@ -88,7 +88,7 @@ DRIVER_PERSONALITIES = {
         'cost_sensitivity': 0.2,      # Low cost sensitivity
         'convenience_weight': 0.8,    # Prioritize convenience
         'max_detour_km': 3.0,        # Minimal detour tolerance
-        'emergency_threshold': 0.25,  # Moderate emergency threshold
+        'emergency_threshold': 0.18,  # 🔧 FIX: Moderate emergency threshold (was 25%)
         'proportion': 0.25
     },
     'procrastinator': {
@@ -98,7 +98,7 @@ DRIVER_PERSONALITIES = {
         'cost_sensitivity': 0.5,      # Moderate cost sensitivity
         'convenience_weight': 0.6,    # Moderate convenience preference
         'max_detour_km': 5.0,        # Moderate detour tolerance
-        'emergency_threshold': 0.10,  # Very low emergency threshold
+        'emergency_threshold': 0.10,  # 🔧 FIX: Very low emergency threshold (realistic minimum)
         'proportion': 0.25
     }
 }
@@ -186,8 +186,8 @@ class SyntheticEVGenerator:
             
             # Select driver profile
             driver_profile = self._select_driver_profile()
-            # Select driving style (behavioral pattern) - separate from profile
-            driving_style = self._select_driving_style()
+            # Select driving style (behavioral pattern) - correlated with profile for realism
+            driving_style = self._select_driving_style(driver_profile)
             # Determine home charging access
             has_home_charging = (
                 home_charging_enabled and 
@@ -202,12 +202,19 @@ class SyntheticEVGenerator:
 
             driver_personality = self._select_driver_personality()
 
+            # 🔧 FIX: Apply driving style efficiency modifier for realistic consumption patterns
+            driving_style_modifier = DRIVING_STYLES[driving_style]['efficiency_modifier']
+            base_efficiency = model_specs['efficiency'] * np.random.normal(1.0, 0.05)  # 5% variation
+            
+            # Apply driving style modifier
+            final_efficiency = base_efficiency * driving_style_modifier
+            
             # Generate vehicle-specific characteristics
             vehicle = {
                 'vehicle_id': f'EV_{vehicle_id:03d}',
                 'model': model_name,
                 'battery_capacity': model_specs['battery_capacity'],
-                'efficiency': model_specs['efficiency'] * np.random.normal(1.0, 0.05),  # 5% variation
+                'efficiency': final_efficiency,  # Now includes driving style impact
                 'max_charging_speed': model_specs['max_charging_speed'],
                 'driver_profile': driver_profile,
                 'driving_style': driving_style,
@@ -299,11 +306,37 @@ class SyntheticEVGenerator:
         weights = [DRIVER_PROFILES[profile]['proportion'] for profile in profiles]
         return np.random.choice(profiles, p=weights)
     
-    def _select_driving_style(self) -> str:
-        """Select driving style based on proportions"""
-        styles = list(DRIVING_STYLES.keys())
-        weights = [DRIVING_STYLES[style]['proportion'] for style in styles]
-        return np.random.choice(styles, p=weights)
+    def _select_driving_style(self, driver_profile: str = None) -> str:
+        """Select driving style based on proportions and driver profile correlation"""
+        
+        # 🔧 FIX: Correlate driving style with driver profile for realistic efficiency patterns
+        if driver_profile:
+            if driver_profile == 'casual':
+                # Casual drivers tend to be more eco-friendly, less aggressive
+                style_probs = {'eco_friendly': 0.4, 'normal': 0.5, 'aggressive': 0.1}
+            elif driver_profile == 'commuter':
+                # Commuters are mixed but tend to be efficient for cost savings
+                style_probs = {'eco_friendly': 0.3, 'normal': 0.6, 'aggressive': 0.1}
+            elif driver_profile == 'delivery':
+                # Delivery drivers are time-pressured, more aggressive driving
+                style_probs = {'eco_friendly': 0.1, 'normal': 0.4, 'aggressive': 0.5}
+            elif driver_profile == 'rideshare':
+                # Rideshare drivers balance efficiency with time pressure
+                style_probs = {'eco_friendly': 0.2, 'normal': 0.6, 'aggressive': 0.2}
+            else:
+                # Default to original proportions
+                styles = list(DRIVING_STYLES.keys())
+                weights = [DRIVING_STYLES[style]['proportion'] for style in styles]
+                return np.random.choice(styles, p=weights)
+            
+            styles = list(style_probs.keys())
+            weights = list(style_probs.values())
+            return np.random.choice(styles, p=weights)
+        else:
+            # Original method for backward compatibility
+            styles = list(DRIVING_STYLES.keys())
+            weights = [DRIVING_STYLES[style]['proportion'] for style in styles]
+            return np.random.choice(styles, p=weights)
 
 
     def _generate_home_location(self) -> Tuple[float, float]:
@@ -1466,21 +1499,51 @@ class SyntheticEVGenerator:
             energy_consumed_percent = consumption_kwh / battery_capacity
             current_soc -= energy_consumed_percent
             
-            # Ensure SOC doesn't go negative
-            current_soc = max(0.05, current_soc)  # Minimum 5% to avoid complete drain
+            # 🔧 FIX: Realistic minimum SOC protection - modern EVs prevent deep discharge
+            # Most EVs have BMS that prevents discharge below 10-15% to protect battery health
+            min_operational_soc = 0.12  # 12% minimum - realistic BMS protection
+            current_soc = max(min_operational_soc, current_soc)
             
-            charging_decision = self._should_charge_enhanced(
-                vehicle, current_soc, route['destination'], route_end_time
-            )
-            needs_charging = charging_decision['should_charge']
-            urgency = charging_decision['urgency']
-            target_soc = charging_decision['target_soc']
-            # Opportunistic charging logic (less likely if has home charging)
-            opportunistic_prob = 0.1 if vehicle['has_home_charging'] else 0.3
+            # If approaching critical level, force emergency charging
+            if current_soc <= 0.15:
+                charging_decision = {
+                    'should_charge': True,
+                    'urgency': 'emergency',
+                    'target_soc': 0.8,  # Emergency charge to 80%
+                    'max_acceptable_cost': 1.0  # Will pay any reasonable price
+                }
+                needs_charging = True
+                urgency = 'emergency'
+                target_soc = 0.8
+            else:
+                charging_decision = self._should_charge_enhanced(
+                    vehicle, current_soc, route['destination'], route_end_time
+                )
+                needs_charging = charging_decision['should_charge']
+                urgency = charging_decision['urgency']
+                target_soc = charging_decision['target_soc']
+            # 🔧 FIX: Realistic opportunistic charging with home charging preference
+            # People with home charging are much less likely to use public charging opportunistically
+            if vehicle['has_home_charging']:
+                # Home owners prefer to wait and charge at home unless urgent
+                if vehicle['driver_profile'] == 'rideshare':
+                    opportunistic_prob = 0.25  # Still need flexibility for rideshare
+                elif vehicle['driver_profile'] == 'delivery':
+                    opportunistic_prob = 0.20  # Commercial drivers sometimes need quick top-ups
+                else:
+                    opportunistic_prob = 0.05  # Casual/commuters rarely do opportunistic public charging
+            else:
+                # Non-home charging users depend more on public infrastructure
+                if vehicle['driver_profile'] == 'rideshare':
+                    opportunistic_prob = 0.45
+                elif vehicle['driver_profile'] == 'delivery':
+                    opportunistic_prob = 0.40
+                else:
+                    opportunistic_prob = 0.35
+            
             opportunistic_charging = (
-                current_soc < 0.7 and  # Less than 70%
-                np.random.random() < opportunistic_prob and
-                vehicle['driver_profile'] == 'rideshare'  # More likely for rideshare
+                current_soc < 0.6 and  # Less than 60% (lower threshold)
+                np.random.random() < opportunistic_prob
             )
             
             if needs_charging or opportunistic_charging:
@@ -1489,12 +1552,41 @@ class SyntheticEVGenerator:
                     next_destination = routes[route_idx + 1]['destination']
                 else:
                     next_destination = vehicle['home_location']
-                # Determine charging type based on location and time
+                # 🔧 FIX: Realistic charging type decision with strong home preference
                 is_at_home = self._is_near_home(route['destination'], vehicle['home_location'])
+                is_near_home = self._is_near_home(route['destination'], vehicle['home_location'], threshold_km=5.0)
                 
-                if is_at_home and vehicle['has_home_charging']:
-                    # Home charging - use route end time with small delay
-                    charging_start_time = route_end_time + timedelta(minutes=np.random.randint(5, 30))
+                # Decide charging type based on realistic human behavior
+                use_home_charging = False
+                
+                if vehicle['has_home_charging']:
+                    if is_at_home:
+                        # At home - almost always use home charging
+                        use_home_charging = np.random.random() < 0.95  # 95% probability
+                    elif is_near_home and not needs_charging:
+                        # Near home for opportunistic charging - strong preference for home
+                        use_home_charging = np.random.random() < 0.85  # 85% go home to charge
+                    elif urgency == 'low' and is_near_home:
+                        # Low urgency and near home - prefer to go home
+                        use_home_charging = np.random.random() < 0.70  # 70% go home
+                    elif urgency == 'medium':
+                        # Medium urgency - sometimes still prefer home if nearby
+                        if is_near_home:
+                            use_home_charging = np.random.random() < 0.40  # 40% still go home
+                        else:
+                            use_home_charging = np.random.random() < 0.15  # 15% drive home
+                    # Emergency charging - rarely go home unless already there
+                    elif urgency == 'emergency':
+                        use_home_charging = is_at_home and np.random.random() < 0.80
+                
+                if use_home_charging:
+                    # Home charging - potentially with detour time
+                    if is_at_home:
+                        detour_time = np.random.randint(5, 30)  # Already home
+                    else:
+                        detour_time = np.random.randint(20, 60)  # Time to drive home
+                    
+                    charging_start_time = route_end_time + timedelta(minutes=detour_time)
                     
                     charging_session = self._generate_home_charging_session(
                         vehicle, charging_start_time, current_soc
@@ -1516,17 +1608,49 @@ class SyntheticEVGenerator:
                     charging_end_time = datetime.fromisoformat(charging_session['end_time'])
                     current_time = charging_end_time
         
-        # End of day home charging (only if has home charging)
+        # 🔧 FIX: Realistic end-of-day home charging timing
         if (vehicle['has_home_charging'] and 
             current_soc < 0.8 and 
             np.random.random() < 0.9):
             
-            # Evening charging - after last route with some delay
-            evening_charging_time = current_time + timedelta(minutes=np.random.randint(30, 120))
+            # Generate realistic evening charging time based on human behavior
+            # Most people charge when they get home from work (6-11 PM)
+            base_date = current_time.date()
             
-            # Ensure it's reasonable evening time (not too late)
-            if evening_charging_time.hour > 23:
-                evening_charging_time = evening_charging_time.replace(hour=22, minute=0)
+            # Determine realistic evening charging hour based on driver profile
+            if vehicle['driver_profile'] == 'commuter':
+                # Commuters typically arrive home 6-8 PM
+                evening_hour = np.random.choice([18, 19, 20, 21], p=[0.3, 0.4, 0.2, 0.1])
+            elif vehicle['driver_profile'] == 'delivery':
+                # Delivery drivers finish earlier but may be tired, charge 5-7 PM
+                evening_hour = np.random.choice([17, 18, 19, 20], p=[0.2, 0.4, 0.3, 0.1])
+            elif vehicle['driver_profile'] == 'rideshare':
+                # Rideshare drivers have variable schedules, may charge before evening peak
+                evening_hour = np.random.choice([16, 17, 18, 19, 20, 21, 22], p=[0.1, 0.15, 0.2, 0.2, 0.15, 0.15, 0.05])
+            else:  # casual
+                # Casual drivers charge when convenient, later evening
+                evening_hour = np.random.choice([19, 20, 21, 22], p=[0.2, 0.3, 0.3, 0.2])
+            
+            # Add some variation in minutes
+            evening_minute = np.random.randint(0, 60)
+            
+            evening_charging_time = datetime.combine(base_date, datetime.min.time()).replace(
+                hour=evening_hour, minute=evening_minute
+            )
+            
+            # If the calculated time is before current time, it means we finished routes very late
+            # In this case, charge immediately but not past midnight
+            if evening_charging_time <= current_time:
+                if current_time.hour >= 23:
+                    # Too late - charge early morning next day
+                    next_day = base_date + timedelta(days=1)
+                    morning_hour = np.random.choice([5, 6, 7], p=[0.2, 0.5, 0.3])
+                    evening_charging_time = datetime.combine(next_day, datetime.min.time()).replace(
+                        hour=morning_hour, minute=np.random.randint(0, 60)
+                    )
+                else:
+                    # Add small delay from current time
+                    evening_charging_time = current_time + timedelta(minutes=np.random.randint(15, 60))
             
             end_day_session = self._generate_home_charging_session(
                 vehicle, evening_charging_time, current_soc
@@ -1577,13 +1701,42 @@ class SyntheticEVGenerator:
     
     def _generate_home_charging_session(self, vehicle: Dict, start_time: datetime, 
                                   start_soc: float) -> Dict:
-        """Generate home charging session - SIMPLIFIED"""
+        """Generate home charging session - REALISTIC human behavior"""
         
         charging_power = self.config['charging']['home_charging_power']  # 7.4 kW
         battery_capacity = vehicle['battery_capacity']
+        personality = DRIVER_PERSONALITIES[vehicle['driver_personality']]
         
-        # Charge to 80-90% (typical home charging behavior)
-        target_soc = np.random.uniform(0.8, 0.9)
+        # 🔧 FIX: Realistic home charging behavior
+        # Many people don't charge to 100%, some stop early due to time constraints or habits
+        base_target = personality['target_soc_home']
+        
+        # Add realistic human variation - sometimes people stop charging early
+        time_of_day = start_time.hour
+        day_of_week = start_time.weekday()
+        
+        # Night charging (10 PM - 6 AM) - people tend to charge fully
+        if 22 <= time_of_day or time_of_day <= 6:
+            target_soc_variation = np.random.uniform(0.9, 1.0)  # 90-100% of target
+        # Evening charging (6 PM - 10 PM) - sometimes interrupted
+        elif 18 <= time_of_day <= 22:
+            # 30% chance of early interruption (visitors, going out, forgetting)
+            if np.random.random() < 0.3:
+                target_soc_variation = np.random.uniform(0.4, 0.7)  # Only partial charge
+            else:
+                target_soc_variation = np.random.uniform(0.8, 1.0)
+        # Weekend vs weekday differences
+        else:
+            target_soc_variation = np.random.uniform(0.7, 1.0)
+        
+        # Weekend effect - more relaxed charging
+        if day_of_week >= 5:  # Weekend
+            if np.random.random() < 0.2:  # 20% chance of lazy charging
+                target_soc_variation *= np.random.uniform(0.6, 0.8)
+        
+        target_soc = min(0.95, base_target * target_soc_variation)  # Cap at 95%
+        target_soc = max(0.3, target_soc)  # Floor at 30% for minimum usability
+        
         energy_needed = max(0, (target_soc - start_soc) * battery_capacity)
         
         # Calculate charging time (with charging curve)
@@ -1674,12 +1827,38 @@ class SyntheticEVGenerator:
         # Determine charging parameters
         personality = DRIVER_PERSONALITIES[vehicle['driver_personality']]
 
+        # 🔧 FIX: Realistic public charging behavior
         if is_emergency:
-            # Emergency charging - charge to 80%
-            target_soc = personality['target_soc_public']
+            # Emergency charging - people are stressed and might stop earlier than optimal
+            base_target = personality['target_soc_public']
+            # 20% chance to stop charging early due to anxiety/cost concerns
+            if np.random.random() < 0.2:
+                target_soc = base_target * np.random.uniform(0.6, 0.8)  # Stop at 60-80% of target
+            else:
+                target_soc = base_target * np.random.uniform(0.9, 1.0)  # Nearly full charge
         else:
-            # Opportunistic charging - partial charge
-            target_soc = personality['target_soc_public'] * np.random.uniform(0.7, 0.9)
+            # Opportunistic charging - highly variable human behavior
+            base_target = personality['target_soc_public']
+            
+            # Time pressure affects charging behavior
+            hour = start_time.hour
+            if 7 <= hour <= 9 or 17 <= hour <= 19:  # Rush hours
+                # People in hurry - shorter charging sessions
+                target_soc = base_target * np.random.uniform(0.3, 0.6)  # Quick top-up
+            elif 12 <= hour <= 14:  # Lunch hours
+                # Moderate time available
+                target_soc = base_target * np.random.uniform(0.5, 0.8)
+            else:
+                # More time available - longer sessions
+                target_soc = base_target * np.random.uniform(0.6, 0.9)
+            
+            # Cost sensitivity affects behavior
+            cost_per_kwh = selected_station.get('cost_usd_per_kwh', 0.35)
+            if cost_per_kwh > 0.40:  # Expensive station
+                target_soc *= np.random.uniform(0.7, 0.9)  # Charge less due to cost
+        
+        # Ensure reasonable bounds
+        target_soc = max(0.25, min(0.95, target_soc))
         
         battery_capacity = vehicle['battery_capacity']
         energy_needed = max(0, (target_soc - start_soc) * battery_capacity)
@@ -2237,14 +2416,14 @@ def main():
     
     # Configuration override for testing
     config_override = {
-        'fleet': {'fleet_size': 30},  # Smaller fleet for testing
-        'simulation': {'simulation_days': 60}  # One week of data
+        'fleet': {'fleet_size': 10},  # Smaller fleet for testing
+        'simulation': {'simulation_days': 7}  # One week of data
     }
     
     # Initialize generator
     generator = SyntheticEVGenerator(config_override)
     
-    # Log infrastructure status
+    # Log infrastructure statuss
     generator.log_infrastructure_status()
 
     # Check network status
@@ -2252,7 +2431,7 @@ def main():
     print(f"\n📊 Network Status: {network_info}")
 
     # Generate complete dataset
-    datasets = generator.generate_complete_dataset(num_days=60)
+    datasets = generator.generate_complete_dataset(num_days=7)
     
     # Save datasets
     saved_files = generator.save_datasets(datasets)
