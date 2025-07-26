@@ -136,7 +136,7 @@ class SyntheticEVGenerator:
 
         
         # Initialize random seed for reproducibility and testing remove when generating final data
-        np.random.seed(42)
+        #np.random.seed(42)
         
         info("Synthetic EV Generator initialized", "synthetic_ev_generator")
 
@@ -340,12 +340,24 @@ class SyntheticEVGenerator:
 
 
     def _generate_home_location(self) -> Tuple[float, float]:
-        """Generate realistic home location on land (not in water bodies)"""
+        """Generate realistic population-weighted home location"""
         
-        max_attempts = 50  # Prevent infinite loops
+        # 🔧 FIX: Use population-weighted sampling instead of uniform distribution
+        # Try population centers first (80% probability)
+        if np.random.random() < 0.8:
+            location = self._sample_from_population_centers()
+            if location and self._is_location_on_land(location[0], location[1]):
+                return location
         
+        # Fallback to weighted random within residential areas (15% probability)
+        if np.random.random() < 0.75:  # 15% of remaining 20%
+            location = self._sample_from_residential_areas()
+            if location and self._is_location_on_land(location[0], location[1]):
+                return location
+        
+        # Final fallback: try uniform sampling with land filter (5% probability)
+        max_attempts = 50
         for attempt in range(max_attempts):
-            # Generate random location within Bay Area bounds
             lat = np.random.uniform(
                 self.config['geography']['south'], 
                 self.config['geography']['north']
@@ -355,7 +367,6 @@ class SyntheticEVGenerator:
                 self.config['geography']['east']
             )
             
-            # Check if location is on land (not in water)
             if self._is_location_on_land(lat, lon):
                 return (lat, lon)
         
@@ -410,7 +421,81 @@ class SyntheticEVGenerator:
         # Assume location is on land if it passes all water checks
         return True
 
-
+    def _sample_from_population_centers(self) -> Tuple[float, float]:
+        """Sample home location from major population centers with realistic density"""
+        
+        # Define major Bay Area population centers with weights
+        population_centers = {
+            # San Francisco - high density
+            'sf_mission': {'center': (37.7599, -122.4148), 'radius': 0.015, 'weight': 0.15},
+            'sf_sunset': {'center': (37.7431, -122.4664), 'radius': 0.020, 'weight': 0.12},
+            'sf_richmond': {'center': (37.7806, -122.4647), 'radius': 0.018, 'weight': 0.10},
+            
+            # Oakland - medium-high density  
+            'oakland_downtown': {'center': (37.8044, -122.2712), 'radius': 0.012, 'weight': 0.08},
+            'oakland_hills': {'center': (37.8197, -122.2486), 'radius': 0.025, 'weight': 0.06},
+            
+            # San Jose - medium density, larger area
+            'san_jose_downtown': {'center': (37.3382, -122.0922), 'radius': 0.020, 'weight': 0.10},
+            'san_jose_south': {'center': (37.2970, -121.8587), 'radius': 0.025, 'weight': 0.08},
+            
+            # Peninsula communities
+            'palo_alto': {'center': (37.4419, -122.1430), 'radius': 0.015, 'weight': 0.06},
+            'mountain_view': {'center': (37.3861, -122.0839), 'radius': 0.018, 'weight': 0.05},
+            'redwood_city': {'center': (37.4852, -122.2364), 'radius': 0.020, 'weight': 0.05},
+            
+            # East Bay communities
+            'berkeley': {'center': (37.8715, -122.2730), 'radius': 0.015, 'weight': 0.06},
+            'fremont': {'center': (37.5485, -121.9886), 'radius': 0.025, 'weight': 0.05},
+            'hayward': {'center': (37.6688, -122.0808), 'radius': 0.020, 'weight': 0.04}
+        }
+        
+        # Weighted selection of population center
+        centers = list(population_centers.keys())
+        weights = [population_centers[center]['weight'] for center in centers]
+        selected_center = np.random.choice(centers, p=weights)
+        
+        center_info = population_centers[selected_center]
+        center_lat, center_lon = center_info['center']
+        radius = center_info['radius']
+        
+        # Generate location within radius using realistic distribution
+        # Use normal distribution to concentrate near center
+        angle = np.random.uniform(0, 2 * np.pi)
+        # Use beta distribution to bias toward center but allow spread
+        distance_factor = np.random.beta(2, 5)  # Biased toward 0
+        actual_radius = radius * distance_factor
+        
+        lat_offset = actual_radius * np.cos(angle)
+        lon_offset = actual_radius * np.sin(angle)
+        
+        return (center_lat + lat_offset, center_lon + lon_offset)
+    
+    def _sample_from_residential_areas(self) -> Tuple[float, float]:
+        """Sample from broader residential areas with medium density"""
+        
+        # Define residential zones (broader areas, lower density)
+        residential_areas = {
+            'sf_outer': {'bounds': (37.7200, 37.7800, -122.5100, -122.3800), 'weight': 0.20},
+            'peninsula': {'bounds': (37.4000, 37.6000, -122.3000, -122.1000), 'weight': 0.25},
+            'east_bay': {'bounds': (37.6500, 37.8500, -122.3000, -122.0500), 'weight': 0.20},
+            'south_bay': {'bounds': (37.2500, 37.4500, -122.1500, -121.7500), 'weight': 0.25},
+            'north_bay': {'bounds': (37.8500, 38.0000, -122.4000, -122.2000), 'weight': 0.10}
+        }
+        
+        # Weighted selection of residential area
+        areas = list(residential_areas.keys())
+        weights = [residential_areas[area]['weight'] for area in areas]
+        selected_area = np.random.choice(areas, p=weights)
+        
+        bounds = residential_areas[selected_area]['bounds']
+        lat_min, lat_max, lon_min, lon_max = bounds
+        
+        # Uniform sampling within the selected residential area
+        lat = np.random.uniform(lat_min, lat_max)
+        lon = np.random.uniform(lon_min, lon_max)
+        
+        return (lat, lon)
 
     def _generate_trip_destination(self, origin: Tuple[float, float], target_distance: float, 
                               driver_profile: str, is_weekend: bool) -> Tuple[float, float]:
@@ -514,11 +599,18 @@ class SyntheticEVGenerator:
         total_daily_km = np.random.uniform(*daily_km_range)
         num_trips = np.random.randint(*trips_range)
         
+        # 🔧 NEW: Initialize dynamic return home system (no binary decision)
+        # Track vehicle state for contextual decisions
+        if 'last_home_visit' not in vehicle:
+            vehicle['last_home_visit'] = date.date()  # First day assumes starting at home
+        if 'current_location' not in vehicle:
+            vehicle['current_location'] = vehicle['home_location']
+        
         # 🔧 FIX: Generate realistic daily start time
         daily_start_time = self._generate_daily_start_time(vehicle, date, is_weekend)
         
         # Generate individual trips with proper timing
-        current_location = vehicle['home_location']
+        current_location = vehicle['current_location']  # Start from last known location
         current_time = daily_start_time
         remaining_km = total_daily_km
         
@@ -533,9 +625,9 @@ class SyntheticEVGenerator:
                 max_trip_distance = min(remaining_km * 0.7, remaining_km - (num_trips - trip_id - 1) * 5)
                 trip_distance = np.random.uniform(5, max_trip_distance)
             
-            # Generate destination
-            destination = self._generate_trip_destination(
-                current_location, trip_distance, vehicle['driver_profile'], is_weekend
+            # 🔧 NEW: Generate destination using dynamic home weighting
+            destination = self._generate_trip_destination_with_home_weighting(
+                current_location, trip_distance, vehicle, date, current_time, is_weekend
             )
             
             # 🔧 FIX: Generate route with proper timing
@@ -548,10 +640,24 @@ class SyntheticEVGenerator:
                 current_location = destination
                 remaining_km -= trip_distance
                 
+                # 🔧 NEW: Update vehicle state tracking
+                if self._is_near_home(destination, vehicle['home_location'], threshold_km=2.0):
+                    vehicle['last_home_visit'] = date.date()
+                
                 # 🔧 FIX: Update current time based on route duration + break
                 route_duration = timedelta(minutes=route['total_time_minutes'])
                 break_duration = self._generate_break_duration(vehicle['driver_profile'], trip_id, num_trips)
                 current_time = current_time + route_duration + break_duration
+        
+        # 🔧 NEW: Update vehicle's current location for next day
+        vehicle['current_location'] = current_location
+        
+        # Log final vehicle state for debugging
+        if routes:
+            final_destination = routes[-1]['destination']
+            distance_from_home = geodesic(final_destination, vehicle['home_location']).kilometers
+            home_trips = sum(1 for route in routes if self._is_near_home(route['destination'], vehicle['home_location'], 2.0))
+            debug(f"Vehicle {vehicle['vehicle_id']} daily summary: {len(routes)} trips, {home_trips} to home, final distance from home: {distance_from_home:.1f}km", "synthetic_ev_generator")
         
         return routes
 
@@ -611,6 +717,273 @@ class SyntheticEVGenerator:
 
 
 
+    def _calculate_home_weight(self, vehicle: Dict, current_time: datetime, 
+                             current_location: Tuple[float, float], weather: Dict) -> float:
+        """Calculate dynamic home weighting for trip destination selection"""
+        
+        driver_profile = vehicle['driver_profile']
+        driver_personality = vehicle['driver_personality']
+        
+        # 1. BASE HOME WEIGHT by driver type
+        base_weights = {
+            'commuter': 0.30,    # 30% base chance each trip targets home
+            'delivery': 0.15,    # 15% - depot/home mixed
+            'rideshare': 0.20,   # 20% - end shifts at home
+            'casual': 0.10       # 10% - home just another destination
+        }
+        
+        base_weight = base_weights.get(driver_profile, 0.15)
+        
+        # 2. TIME-BASED PRESSURE MULTIPLIERS
+        hour = current_time.hour
+        if 6 <= hour < 10:      # Morning (leaving home)
+            time_multiplier = 0.5
+        elif 10 <= hour < 15:   # Midday
+            time_multiplier = 1.0
+        elif 15 <= hour < 18:   # Afternoon (commute home)
+            time_multiplier = 1.5
+        elif 18 <= hour < 21:   # Evening (dinner, family time)
+            time_multiplier = 2.5
+        elif 21 <= hour < 24:   # Night (strong return pressure)
+            time_multiplier = 4.0
+        else:                   # Late night/early morning
+            time_multiplier = 6.0
+        
+        # 3. DAY OF WEEK EFFECTS
+        day_of_week = current_time.weekday()
+        if day_of_week == 6:    # Sunday
+            day_multiplier = 2.0  # Strong home pull before Monday
+        elif day_of_week == 4:  # Friday
+            day_multiplier = 0.8  # Weekend starts, more likely to stay out
+        elif day_of_week == 5:  # Saturday
+            day_multiplier = 0.9  # Weekend activities
+        else:                   # Weekdays
+            day_multiplier = 1.0
+        
+        # 4. WEATHER EFFECTS
+        temp = weather.get('temperature', 20)
+        weather_multiplier = 1.0
+        if weather.get('is_raining', False):
+            weather_multiplier = 1.3  # Prefer staying home in rain
+        elif temp < 5:          # Extreme cold
+            weather_multiplier = 1.2
+        elif temp > 35:         # Extreme heat
+            weather_multiplier = 1.1
+        elif 18 <= temp <= 25:  # Nice weather
+            weather_multiplier = 0.9  # More likely to stay out
+        
+        # 5. DISTANCE FROM HOME EFFECTS
+        distance_from_home = geodesic(current_location, vehicle['home_location']).kilometers
+        if distance_from_home < 10:
+            distance_multiplier = 1.0   # Easy to return
+        elif distance_from_home < 25:
+            distance_multiplier = 0.8   # Moderate distance
+        elif distance_from_home < 50:
+            distance_multiplier = 0.6   # Far from home
+        else:
+            distance_multiplier = 0.3   # Very far, likely overnight trip
+        
+        # 6. TIME SINCE LAST HOME VISIT
+        last_home_visit = vehicle.get('last_home_visit', current_time.date())
+        days_away = (current_time.date() - last_home_visit).days
+        if days_away == 0:
+            home_visit_multiplier = 1.0
+        elif days_away == 1:
+            home_visit_multiplier = 1.5  # Building pressure
+        elif days_away == 2:
+            home_visit_multiplier = 3.0  # Strong pressure
+        else:
+            home_visit_multiplier = 5.0  # Very strong pressure
+        
+        # 7. PERSONALITY MODIFIERS
+        personality_multiplier = 1.0
+        if driver_personality == 'anxious':
+            personality_multiplier = 1.2  # More likely to return home
+        elif driver_personality == 'procrastinator':
+            personality_multiplier = 0.8  # Less likely to return home
+        elif driver_personality == 'optimizer':
+            # Optimizer considers efficiency - closer to home = higher probability
+            personality_multiplier = 1.1 if distance_from_home < 20 else 0.9
+        
+        # Calculate final weight
+        final_weight = (base_weight * time_multiplier * day_multiplier * 
+                       weather_multiplier * distance_multiplier * 
+                       home_visit_multiplier * personality_multiplier)
+        
+        # Clamp to reasonable bounds
+        return np.clip(final_weight, 0.01, 0.95)
+
+    def _check_for_long_trip(self, vehicle: Dict, current_time: datetime) -> bool:
+        """Check if vehicle should start a long trip (multi-day)"""
+        
+        driver_profile = vehicle['driver_profile']
+        day_of_week = current_time.weekday()
+        
+        # Base long trip probabilities (per trip, very low)
+        base_chances = {
+            'casual': 0.008,     # 0.8% chance per trip
+            'commuter': 0.002,   # 0.2% chance (business travel)
+            'rideshare': 0.001,  # 0.1% chance (rare)
+            'delivery': 0.001    # 0.1% chance (special routes)
+        }
+        
+        base_chance = base_chances.get(driver_profile, 0.002)
+        
+        # Weekend trip multipliers
+        if day_of_week == 4:  # Friday
+            weekend_multiplier = 3.0  # Higher chance for weekend trips
+        elif day_of_week == 5:  # Saturday
+            weekend_multiplier = 2.0  # Weekend getaways
+        else:
+            weekend_multiplier = 1.0
+        
+        # Personality effects
+        personality = vehicle['driver_personality']
+        if personality == 'procrastinator':
+            personality_multiplier = 1.5  # More spontaneous trips
+        elif personality == 'anxious':
+            personality_multiplier = 0.5  # Less likely to travel far
+        else:
+            personality_multiplier = 1.0
+        
+        final_chance = base_chance * weekend_multiplier * personality_multiplier
+        return np.random.random() < final_chance
+
+    def _generate_trip_destination_with_home_weighting(self, origin: Tuple[float, float], 
+                                                     target_distance: float, vehicle: Dict,
+                                                     date: datetime, current_time: datetime,
+                                                     is_weekend: bool) -> Tuple[float, float]:
+        """Generate trip destination using dynamic home weighting"""
+        
+        # Get current weather for contextual factors
+        weather = self._get_weather_conditions(date)
+        
+        # Check for long trip
+        is_long_trip = self._check_for_long_trip(vehicle, current_time)
+        
+        if is_long_trip:
+            debug(f"Vehicle {vehicle['vehicle_id']} starting long trip", "synthetic_ev_generator")
+            # Generate distant destination (>100km)
+            return self._generate_long_trip_destination(origin, vehicle)
+        
+        # Calculate home weight
+        home_weight = self._calculate_home_weight(vehicle, current_time, origin, weather)
+        
+        # Decide destination type based on weight
+        if np.random.random() < home_weight:
+            debug(f"Vehicle {vehicle['vehicle_id']} choosing home as destination (weight: {home_weight:.2f})", "synthetic_ev_generator")
+            return vehicle['home_location']
+        else:
+            # Use original destination generation logic for non-home destinations
+            return self._generate_trip_destination(origin, target_distance, vehicle['driver_profile'], is_weekend)
+    
+    def _generate_long_trip_destination(self, origin: Tuple[float, float], vehicle: Dict) -> Tuple[float, float]:
+        """Generate destination for long trips (>100km away)"""
+        
+        # Generate destinations 100-300km away
+        min_distance = 100
+        max_distance = 300
+        
+        # Try to find a suitable distant location
+        max_attempts = 20
+        bounds = self.config['geography']
+        
+        for _ in range(max_attempts):
+            # Generate random direction and distance
+            angle = np.random.uniform(0, 2 * np.pi)
+            distance_km = np.random.uniform(min_distance, max_distance)
+            distance_deg = distance_km / 111.0  # Convert to approximate degrees
+            
+            lat_offset = distance_deg * np.cos(angle)
+            lon_offset = distance_deg * np.sin(angle)
+            
+            destination = (origin[0] + lat_offset, origin[1] + lon_offset)
+            
+            # Check if within reasonable bounds (expand beyond Bay Area for long trips)
+            extended_bounds = {
+                'south': bounds['south'] - 2.0,
+                'north': bounds['north'] + 2.0,
+                'west': bounds['west'] - 2.0,
+                'east': bounds['east'] + 2.0
+            }
+            
+            if (extended_bounds['south'] <= destination[0] <= extended_bounds['north'] and
+                extended_bounds['west'] <= destination[1] <= extended_bounds['east']):
+                debug(f"Long trip destination: {distance_km:.1f}km away", "synthetic_ev_generator")
+                return destination
+        
+        # Fallback: use max distance in random direction
+        angle = np.random.uniform(0, 2 * np.pi)
+        distance_deg = max_distance / 111.0
+        lat_offset = distance_deg * np.cos(angle)
+        lon_offset = distance_deg * np.sin(angle)
+        
+        return (origin[0] + lat_offset, origin[1] + lon_offset)
+
+    def _assign_realistic_speed(self, coord1: Tuple[float, float], coord2: Tuple[float, float], 
+                               distance_m: float) -> float:
+        """Assign realistic speed based on road characteristics and location"""
+        
+        # Base speed assignment based on segment characteristics
+        if distance_m > 2000:  # Long segments likely highways
+            base_speed = np.random.uniform(80, 100)  # Highway speeds
+        elif distance_m > 1000:  # Medium segments likely major roads
+            base_speed = np.random.uniform(50, 70)   # Major arterial roads
+        elif distance_m > 500:   # Short-medium segments likely city roads
+            base_speed = np.random.uniform(35, 55)   # City roads
+        else:  # Very short segments likely residential/local
+            base_speed = np.random.uniform(25, 45)   # Residential roads
+        
+        # Location-based speed adjustments for Bay Area
+        avg_lat = (coord1[0] + coord2[0]) / 2
+        avg_lon = (coord1[1] + coord2[1]) / 2
+        
+        # Urban vs suburban speed modifiers
+        if self._is_urban_area(avg_lat, avg_lon):
+            # Urban areas: slower speeds due to traffic, lights, congestion
+            speed_modifier = np.random.uniform(0.7, 0.9)
+        elif self._is_highway_corridor(avg_lat, avg_lon):
+            # Highway corridors: higher speeds
+            speed_modifier = np.random.uniform(1.1, 1.3)
+        else:
+            # Suburban/residential: normal speeds
+            speed_modifier = np.random.uniform(0.9, 1.1)
+        
+        # Apply time-of-day congestion effects (simplified)
+        # In real implementation, this could use actual time
+        congestion_factor = np.random.uniform(0.8, 1.0)  # Random traffic
+        
+        final_speed = base_speed * speed_modifier * congestion_factor
+        
+        # Clamp to reasonable bounds
+        return np.clip(final_speed, 15, 120)  # 15-120 km/h range
+    
+    def _is_urban_area(self, lat: float, lon: float) -> bool:
+        """Check if coordinates are in dense urban areas"""
+        # SF downtown
+        if 37.77 <= lat <= 37.80 and -122.42 <= lon <= -122.38:
+            return True
+        # Oakland downtown  
+        if 37.79 <= lat <= 37.82 and -122.28 <= lon <= -122.25:
+            return True
+        # San Jose downtown
+        if 37.32 <= lat <= 37.35 and -121.90 <= lon <= -121.87:
+            return True
+        return False
+    
+    def _is_highway_corridor(self, lat: float, lon: float) -> bool:
+        """Check if coordinates are near major highways"""
+        # I-280 corridor (rough approximation)
+        if 37.25 <= lat <= 37.75 and -122.50 <= lon <= -122.20:
+            return True
+        # I-880 corridor  
+        if 37.30 <= lat <= 37.85 and -122.30 <= lon <= -122.20:
+            return True
+        # US-101 corridor
+        if 37.25 <= lat <= 37.80 and -122.55 <= lon <= -122.45:
+            return True
+        return False
+
     def _generate_route_with_timing(self, origin: Tuple[float, float], destination: Tuple[float, float],
                                vehicle: Dict, start_time: datetime, trip_id: int) -> Dict:
         """Generate realistic route using OSM road network with proper timing"""
@@ -658,6 +1031,14 @@ class SyntheticEVGenerator:
             total_distance = 0
             total_time = 0
             
+            # 🔧 FIX: Add the first coordinate once to avoid duplication
+            # Previously route_coords.extend([coord1, coord2]) was creating duplicates
+            if path:
+                first_node = path[0]
+                first_node_data = self.network_db.network.nodes[first_node]
+                first_coord = (first_node_data['y'], first_node_data['x'])
+                route_coords.append(first_coord)
+            
             for i in range(len(path) - 1):
                 node1, node2 = path[i], path[i + 1]
                 
@@ -668,7 +1049,8 @@ class SyntheticEVGenerator:
                 coord1 = (node1_data['y'], node1_data['x'])
                 coord2 = (node2_data['y'], node2_data['x'])
                 
-                route_coords.extend([coord1, coord2])
+                # Only add the second coordinate (first one was added in previous iteration or initially)
+                route_coords.append(coord2)
                 
                 # Get edge data (handle both OSM and mock networks)
                 try:
@@ -678,18 +1060,26 @@ class SyntheticEVGenerator:
                     try:
                         edge_data = list(self.network_db.network[node1][node2].values())[0]
                     except (KeyError, IndexError):
-                        # Create default edge data
+                        # 🔧 FIX: Create realistic edge data with proper speed assignment
+                        distance_meters = geodesic(coord1, coord2).meters
+                        realistic_speed = self._assign_realistic_speed(coord1, coord2, distance_meters)
                         edge_data = {
-                            'length': geodesic(coord1, coord2).meters,
-                            'speed_kph': 50,
-                            'travel_time': geodesic(coord1, coord2).meters / (50 * 1000 / 3600)
+                            'length': distance_meters,
+                            'speed_kph': realistic_speed,
+                            'travel_time': distance_meters / (realistic_speed * 1000 / 3600)
                         }
                 
-                # Speed and distance
-                speed_kmh = edge_data.get('speed_kph', 50)  # Default 50 km/h
+                # 🔧 FIX: Speed and distance with realistic fallback
                 distance_m = edge_data.get('length', geodesic(coord1, coord2).meters)
+                speed_kmh = edge_data.get('speed_kph', self._assign_realistic_speed(coord1, coord2, distance_m))
                 
+                # 🔧 FIX: Ensure route_speeds matches route_coords length
+                # For the first iteration, add speed for the first coordinate
+                if i == 0:
+                    route_speeds.append(speed_kmh)  # Speed for first coordinate
+                # Always add speed for the second coordinate
                 route_speeds.append(speed_kmh)
+                
                 total_distance += distance_m / 1000  # Convert to km
                 total_time += edge_data.get('travel_time', distance_m / (speed_kmh * 1000 / 3600))
             
@@ -813,14 +1203,16 @@ class SyntheticEVGenerator:
         
         # FIXED: Ensure consumption is calculated even for fallback routes
         if consumption_data['total_consumption_kwh'] == 0 and total_distance > 0:
-            # Force minimum consumption calculation
-            fallback_consumption = self._calculate_fallback_consumption(total_distance, avg_speed_kmh, vehicle)
+            # 🔧 FIX: Use actual weather conditions instead of hardcoded temperature
+            weather_conditions = self._get_weather_conditions(start_time.date())
+            # Force minimum consumption calculation with weather effects
+            fallback_consumption = self._calculate_fallback_consumption(total_distance, avg_speed_kmh, vehicle, weather_conditions)
             consumption_data = {
                 'total_consumption_kwh': fallback_consumption,
                 'total_distance_km': total_distance,
                 'efficiency_kwh_per_100km': (fallback_consumption / total_distance) * 100,
-                'temperature_celsius': 20,  # Default temperature
-                'temperature_efficiency_factor': 1.0,
+                'temperature_celsius': weather_conditions['temperature'],  # Use actual weather
+                'temperature_efficiency_factor': self.energy_model._get_temperature_efficiency_factor(weather_conditions['temperature']),
                 'consumption_breakdown': {
                     'rolling_resistance': fallback_consumption * 0.4,
                     'aerodynamic_drag': fallback_consumption * 0.2,
@@ -831,13 +1223,7 @@ class SyntheticEVGenerator:
                     'regenerative_braking': 0.0,
                     'battery_thermal_loss': 0.0
                 },
-                'weather_conditions': {
-                    'temperature': 20,
-                    'is_raining': False,
-                    'wind_speed_kmh': 10,
-                    'humidity': 0.6,
-                    'season': 'spring'
-                }
+                'weather_conditions': weather_conditions
             }
         
         route_data = {
@@ -858,7 +1244,7 @@ class SyntheticEVGenerator:
         
         return route_data
     
-    def _calculate_fallback_consumption(self, distance_km: float, avg_speed_kmh: float, vehicle: Dict) -> float:
+    def _calculate_fallback_consumption(self, distance_km: float, avg_speed_kmh: float, vehicle: Dict, weather_conditions: Dict = None) -> float:
         """Calculate fallback energy consumption when GPS trace fails"""
         
         # Get vehicle efficiency (kWh/100km)
@@ -872,12 +1258,26 @@ class SyntheticEVGenerator:
         else:
             speed_factor = 1.0
         
-        # Calculate base consumption
-        base_consumption = (base_efficiency / 100) * distance_km * speed_factor
+        # 🔧 FIX: Apply temperature effects if weather conditions are provided
+        temp_factor = 1.0
+        hvac_factor = 1.0
+        if weather_conditions:
+            temp_c = weather_conditions['temperature']
+            # Use the same temperature efficiency factor as the energy model
+            temp_factor = self.energy_model._get_temperature_efficiency_factor(temp_c)
+            
+            # Add realistic HVAC load based on temperature
+            if temp_c < 10:
+                hvac_factor = 1.15  # 15% more consumption for heating
+            elif temp_c > 30:
+                hvac_factor = 1.10  # 10% more consumption for cooling
         
-        # Add auxiliary consumption (time-based)
+        # Calculate base consumption with temperature effects
+        base_consumption = (base_efficiency / 100) * distance_km * speed_factor / temp_factor
+        
+        # Add auxiliary consumption (time-based) with HVAC
         travel_time_hours = distance_km / avg_speed_kmh
-        aux_consumption = 0.5 * travel_time_hours  # 0.5 kW auxiliary load
+        aux_consumption = 0.5 * travel_time_hours * hvac_factor  # Variable auxiliary load based on temperature
         
         total_consumption = base_consumption + aux_consumption
         
@@ -1098,7 +1498,8 @@ class SyntheticEVGenerator:
         # Validate GPS trace
         if not gps_trace or len(gps_trace) < 2:
             warning(f"Invalid GPS trace for {vehicle['vehicle_id']}: {len(gps_trace) if gps_trace else 0} points", "synthetic_ev_generator")
-            return self._create_zero_consumption_result()
+            # 🔧 FIX: Pass date to get proper weather conditions
+            return self._create_zero_consumption_result(date)
         
        
         # Enable debugging for first few vehicles
@@ -1212,8 +1613,21 @@ class SyntheticEVGenerator:
         return max(consumption, min_consumption)
 
 
-    def _create_zero_consumption_result(self) -> Dict:
+    def _create_zero_consumption_result(self, date: datetime = None) -> Dict:
         """Create a minimal but realistic consumption result with noise instead of zero"""
+        
+        # 🔧 FIX: Use actual weather conditions when date is provided
+        if date:
+            weather_conditions = self._get_weather_conditions(date)
+        else:
+            # Fallback to default weather for backward compatibility
+            weather_conditions = {
+                'temperature': np.random.uniform(15, 25),
+                'is_raining': np.random.random() < 0.1,
+                'wind_speed_kmh': np.random.uniform(5, 20),
+                'humidity': np.random.uniform(0.4, 0.8),
+                'season': 'spring'
+            }
         
         # Generate minimal realistic consumption (equivalent to ~0.5-2km trip)
         minimal_distance_km = np.random.uniform(0.1, 0.3)
@@ -1256,20 +1670,17 @@ class SyntheticEVGenerator:
             normalization_factor = minimal_consumption / breakdown_sum
             breakdown = {k: v * normalization_factor for k, v in breakdown.items()}
         
+        # Apply temperature efficiency factor using actual weather
+        temp_efficiency_factor = self.energy_model._get_temperature_efficiency_factor(weather_conditions['temperature'])
+        
         return {
             'total_consumption_kwh': round(minimal_consumption, 4),
             'total_distance_km': round(minimal_distance_km, 3),
             'efficiency_kwh_per_100km': round(efficiency, 2),
-            'temperature_celsius': np.random.uniform(15, 25),  # Random reasonable temp
-            'temperature_efficiency_factor': np.random.uniform(0.95, 1.05),  # Slight variation
+            'temperature_celsius': weather_conditions['temperature'],  # Use actual weather
+            'temperature_efficiency_factor': temp_efficiency_factor,  # Use calculated factor
             'consumption_breakdown': {k: round(v, 4) for k, v in breakdown.items()},
-            'weather_conditions': {
-                'temperature': np.random.uniform(15, 25),
-                'is_raining': np.random.random() < 0.1,  # 10% chance of rain
-                'wind_speed_kmh': np.random.uniform(5, 20),
-                'humidity': np.random.uniform(0.4, 0.8),
-                'season': np.random.choice(['spring', 'summer', 'autumn', 'winter'])
-            }
+            'weather_conditions': weather_conditions  # Use actual weather conditions
         }
 
 
@@ -1735,7 +2146,7 @@ class SyntheticEVGenerator:
                 target_soc_variation *= np.random.uniform(0.6, 0.8)
         
         target_soc = min(0.95, base_target * target_soc_variation)  # Cap at 95%
-        target_soc = max(0.3, target_soc)  # Floor at 30% for minimum usability
+        target_soc = max(start_soc + 0.05, target_soc)  # Floor at 30% for minimum usability
         
         energy_needed = max(0, (target_soc - start_soc) * battery_capacity)
         
@@ -1858,7 +2269,7 @@ class SyntheticEVGenerator:
                 target_soc *= np.random.uniform(0.7, 0.9)  # Charge less due to cost
         
         # Ensure reasonable bounds
-        target_soc = max(0.25, min(0.95, target_soc))
+        target_soc = max(start_soc + 0.05, min(0.95, target_soc))
         
         battery_capacity = vehicle['battery_capacity']
         energy_needed = max(0, (target_soc - start_soc) * battery_capacity)
@@ -2309,12 +2720,15 @@ class SyntheticEVGenerator:
                 print(f"  Average Efficiency: {avg_efficiency:.2f} kWh/100km")
             
             elif name == 'charging_sessions':
-                total_energy = df['energy_delivered_kwh'].sum()
-                total_cost = df['cost_usd'].sum()
-                avg_session_time = df['duration_hours'].mean()
-                print(f"  Total Energy Delivered: {total_energy:,.1f} kWh")
-                print(f"  Total Charging Cost: ${total_cost:,.2f}")
-                print(f"  Average Session Duration: {avg_session_time:.1f} hours")
+                if len(df) > 0 and 'energy_delivered_kwh' in df.columns:
+                    total_energy = df['energy_delivered_kwh'].sum()
+                    total_cost = df['cost_usd'].sum()
+                    avg_session_time = df['duration_hours'].mean()
+                    print(f"  Total Energy Delivered: {total_energy:,.1f} kWh")
+                    print(f"  Total Charging Cost: ${total_cost:,.2f}")
+                    print(f"  Average Session Duration: {avg_session_time:.1f} hours")
+                else:
+                    print("  No charging sessions generated")
             
             elif name == 'vehicle_states':
                 unique_vehicles = df['vehicle_id'].nunique()
@@ -2416,8 +2830,8 @@ def main():
     
     # Configuration override for testing
     config_override = {
-        'fleet': {'fleet_size': 10},  # Smaller fleet for testing
-        'simulation': {'simulation_days': 7}  # One week of data
+        'fleet': {'fleet_size': 20},  # Smaller fleet for testing
+        'simulation': {'simulation_days': 30}  # One week of data
     }
     
     # Initialize generator
@@ -2431,7 +2845,7 @@ def main():
     print(f"\n📊 Network Status: {network_info}")
 
     # Generate complete dataset
-    datasets = generator.generate_complete_dataset(num_days=7)
+    datasets = generator.generate_complete_dataset(num_days=30)
     
     # Save datasets
     saved_files = generator.save_datasets(datasets)
