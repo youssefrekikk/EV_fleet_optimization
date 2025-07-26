@@ -12,6 +12,7 @@ import os
 from geopy.distance import geodesic
 from config.logging_config import *
 from src.utils.logger import info, warning, error, debug
+from scipy.spatial import KDTree
 
 # Import our configurations
 import sys
@@ -41,6 +42,10 @@ class NetworkDatabase:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.network = None
         self.metadata = {}
+        # 🚀 PHASE 1: KDTree for fast spatial queries
+        self._kdtree = None
+        self._node_coords = None
+        self._node_ids = None
     
     def network_exists(self) -> bool:
         """Check if network file exists"""
@@ -78,7 +83,7 @@ class NetworkDatabase:
         
         info(f"Network loaded: {len(self.network.nodes)} nodes, {len(self.network.edges)} edges", 'road_network_db')
         info(f"Created: {data.get('created_at', 'Unknown')}", 'road_network_db')
-        
+        self._build_kdtree()  # Build KDTree after loading
         return self.network
     
     def validate_network_connectivity(self, test_locations: List[Tuple[float, float]]) -> float:
@@ -106,20 +111,25 @@ class NetworkDatabase:
         return successful_routes / total_tests if total_tests > 0 else 0
     
     def _find_nearest_node(self, lat: float, lon: float) -> int:
-        """Find nearest node in network"""
-        min_distance = float('inf')
-        nearest_node = None
-        
-        for node_id, node_data in self.network.nodes(data=True):
-            node_lat = node_data['y']
-            node_lon = node_data['x']
-            distance = geodesic((lat, lon), (node_lat, node_lon)).meters
-            
-            if distance < min_distance:
-                min_distance = distance
-                nearest_node = node_id
-        
-        return nearest_node
+        """Find nearest node in the network using KDTree if available"""
+        if self._kdtree is not None and self._node_coords is not None and self._node_ids is not None:
+            dist, idx = self._kdtree.query([lat, lon])
+            return self._node_ids[idx]
+        try:
+            # Try OSMnx method first
+            return ox.nearest_nodes(self.network, lon, lat)
+        except:
+            # Fallback: find closest node manually
+            min_distance = float('inf')
+            nearest_node = None
+            for node_id, node_data in self.network.nodes(data=True):
+                node_lat = node_data['y']
+                node_lon = node_data['x']
+                distance = geodesic((lat, lon), (node_lat, node_lon)).meters
+                if distance < min_distance:
+                    min_distance = distance
+                    nearest_node = node_id
+            return nearest_node
     
     def load_or_create_network(self) -> nx.MultiDiGraph:
         """Load road network from database or create new one"""
@@ -142,7 +152,7 @@ class NetworkDatabase:
                 connectivity = self.validate_network_connectivity(test_locations)
                 info(f"📊 Loaded network connectivity: {connectivity:.2f}", 'road_network_db')
                 
-                if connectivity > 0.4:  # Accept 40%+ connectivity
+                if connectivity > 0.5:  # Accept 70%+ connectivity
                     info("✅ Using existing network from database", 'road_network_db')
                     return road_network
                 else:
@@ -231,8 +241,8 @@ class NetworkDatabase:
             }
             
             info("💾 Saving network to database...", 'road_network_db')
-            self.network_db.save_network(network, metadata)
-            
+            self.save_network(network, metadata)
+            self._build_kdtree()  # Build KDTree after creating
             return network
         else:
             raise Exception("Failed to create any network - all strategies failed")
@@ -603,44 +613,36 @@ class NetworkDatabase:
         return network
 
     def _add_strategic_bay_area_connections(self, network: nx.MultiDiGraph) -> nx.MultiDiGraph:
-        """Add strategic connections for key Bay Area routes"""
-        
+        """Add strategic connections for key Bay Area routes (manual bridges/tunnels)"""
         info("🌉 Adding strategic Bay Area connections...", 'road_network_db')
-        
         # Key Bay Area connection points that should always be connected
         strategic_connections = [
             # Major bridge/tunnel equivalents
             ((37.7749, -122.4194), (37.8044, -122.2712), 70, "Bay Bridge equivalent"),
             ((37.7749, -122.4194), (37.9735, -122.5311), 65, "Golden Gate Bridge equivalent"),
             ((37.6688, -122.0808), (37.5630, -122.3255), 65, "San Mateo Bridge equivalent"),
-            
+            ((37.8044, -122.2712), (37.9358, -122.3477), 65, "Richmond-San Rafael Bridge equivalent"),
+            ((37.5485, -122.9886), (37.4419, -122.1430), 60, "Dumbarton Bridge equivalent"),
             # Major highway connections
             ((37.3382, -122.0922), (37.5485, -122.9886), 75, "US-880 connection"),
             ((37.7749, -122.4194), (37.3382, -122.0922), 70, "US-101 connection"),
             ((37.8044, -122.2712), (37.3382, -122.0922), 75, "I-880 full connection"),
         ]
-        
         connections_added = 0
-        
         for (lat1, lon1), (lat2, lon2), speed_kmh, description in strategic_connections:
             try:
-                # Find nearest nodes to these strategic points
                 node1 = self._find_nearest_node(lat1, lon1)
                 node2 = self._find_nearest_node(lat2, lon2)
-                
                 if node1 and node2 and node1 != node2:
-                    # Check if already connected
                     try:
                         nx.shortest_path(network, node1, node2)
                         debug(f"✅ {description} already connected", 'road_network_db')
                         continue
                     except nx.NetworkXNoPath:
-                        # Add connection
                         coord1 = (network.nodes[node1]['y'], network.nodes[node1]['x'])
                         coord2 = (network.nodes[node2]['y'], network.nodes[node2]['x'])
                         distance = geodesic(coord1, coord2).meters
                         travel_time = distance / (speed_kmh * 1000 / 3600)
-                        
                         network.add_edge(node1, node2, 0,
                                     length=distance,
                                     speed_kph=speed_kmh,
@@ -653,14 +655,11 @@ class NetworkDatabase:
                                     travel_time=travel_time,
                                     highway='strategic_connection',
                                     description=description)
-                        
                         connections_added += 1
                         info(f"🔗 Added {description}: {distance/1000:.1f}km", 'road_network_db')
-            
             except Exception as e:
                 debug(f"Could not add {description}: {e}", 'road_network_db')
                 continue
-        
         info(f"✅ Added {connections_added} strategic Bay Area connections", 'road_network_db')
         return network
 
@@ -922,63 +921,64 @@ class NetworkDatabase:
 
 
     def _add_basic_network_attributes(self, network):  # Add network parameter
-        """Add basic speed and travel time attributes manually"""
-        info("Adding basic network attributes manually...", 'road_network_db')
-        
-        for u, v, key, data in network.edges(keys=True, data=True):  # Use parameter
-            # Get edge length
+        """Add improved speed and travel time attributes manually"""
+        info("Adding improved network attributes manually...", 'road_network_db')
+        for u, v, key, data in network.edges(keys=True, data=True):
             length = data.get('length', 100)  # Default 100m if missing
-            
-            # Estimate speed based on road type
             highway_type = data.get('highway', 'residential')
-            
             if isinstance(highway_type, list):
                 highway_type = highway_type[0]
-            
-            # Speed mapping (km/h)
+            # Improved speed mapping (km/h) with more types and realism
             speed_map = {
-                'motorway': 100,
-                'trunk': 80,
-                'primary': 60,
-                'secondary': 50,
-                'tertiary': 40,
-                'residential': 30,
+                'motorway': 105,
+                'motorway_link': 90,
+                'trunk': 90,
+                'trunk_link': 80,
+                'primary': 70,
+                'primary_link': 60,
+                'secondary': 55,
+                'secondary_link': 50,
+                'tertiary': 45,
+                'tertiary_link': 40,
+                'residential': 32,
                 'service': 20,
-                'unclassified': 40
+                'unclassified': 40,
+                'synthetic_bridge': 80,
+                'synthetic_regional': 65,
+                'synthetic_local': 50,
+                'strategic_connection': 70,
+                'secondary': 55,
+                'secondary_link': 50,
+                'primary': 70,
+                'primary_link': 60,
+                'highway': 40
             }
-            
             speed_kmh = speed_map.get(highway_type, 40)  # Default 40 km/h
-            
-            # Add attributes
             network.edges[u, v, key]['speed_kph'] = speed_kmh
             network.edges[u, v, key]['travel_time'] = length / (speed_kmh * 1000 / 3600)
-        
         return network  # Return the modified network
 
 
 
 
 
-    def _find_nearest_node(self, lat: float, lon: float) -> int:
-        """Find nearest node in the network (with fallback for mock network)"""
-        try:
-            # Try OSMnx method first
-            return ox.nearest_nodes(self.network, lon, lat)
-        except:
-            # Fallback: find closest node manually
-            min_distance = float('inf')
-            nearest_node = None
-            
-            for node_id, node_data in self.network.nodes(data=True):
-                node_lat = node_data['y']
-                node_lon = node_data['x']
-                distance = geodesic((lat, lon), (node_lat, node_lon)).meters
-                
-                if distance < min_distance:
-                    min_distance = distance
-                    nearest_node = node_id
-            
-            return nearest_node
+    def _build_kdtree(self):
+        """Build KDTree for fast nearest node search"""
+        if self.network is None:
+            return
+        coords = []
+        node_ids = []
+        for node_id, node_data in self.network.nodes(data=True):
+            coords.append([node_data['y'], node_data['x']])
+            node_ids.append(node_id)
+        if coords:
+            self._kdtree = KDTree(coords)
+            self._node_coords = np.array(coords)
+            self._node_ids = np.array(node_ids)
+        else:
+            self._kdtree = None
+            self._node_coords = None
+            self._node_ids = None
 
 
 
