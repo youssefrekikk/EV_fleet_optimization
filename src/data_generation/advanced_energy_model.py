@@ -363,9 +363,18 @@ class AdvancedEVEnergyModel:
                                 vehicle_specs: Dict, weather: Dict) -> Dict:
         """Calculate physics-based driving forces"""
         
-        # Rolling resistance force
+        # 🔧 FIX: Rolling resistance force with stable grade calculation
         # F_roll = Cr * m * g * cos(θ) where θ is road grade
-        road_grade = math.atan(elevation_change / distance_m) if distance_m > 0 else 0
+        # Prevent extreme grades from noisy elevation data
+        if distance_m > 0:
+            # Calculate grade as rise/run, then clip to realistic limits
+            grade_ratio = elevation_change / distance_m
+            # Clip to max 15% grade (steepest roads), most roads <8%
+            grade_ratio = np.clip(grade_ratio, -0.15, 0.15)
+            road_grade = math.atan(grade_ratio)
+        else:
+            road_grade = 0
+            
         rolling_coeff = self._get_rolling_resistance_coefficient(speed_ms, weather)
         rolling_force = rolling_coeff * vehicle_specs['mass'] * self.GRAVITY * math.cos(road_grade)
         
@@ -434,20 +443,20 @@ class AdvancedEVEnergyModel:
         
         if temp_diff <= 3:  # Increased comfort zone
             # Minimal HVAC usage - just fan
-            return 150  # 150W for ventilation fan only
+            return 300  # 150W for ventilation fan only
     
         # Determine heating vs cooling with realistic power levels
         if temp_c < target_temp:
             # Heating mode - heat pump efficiency considered
             if vehicle_specs.get('has_heat_pump', True):
-                base_load = 400  # Heat pump: 400W base
+                base_load = 1500  # Heat pump: 400W base
                 load_factor = min(1.8, 1 + temp_diff * 0.05)  # Gradual increase
             else:
-                base_load = 600  # Resistive heating: 600W base
+                base_load = 2500  # Resistive heating: 600W base
                 load_factor = min(2.2, 1 + temp_diff * 0.08)
         else:
             # Cooling mode - A/C compressor
-            base_load = 500  # 500W base for A/C
+            base_load = 2000  # 500W base for A/C
             load_factor = min(2.0, 1 + temp_diff * 0.06)  # Gradual increase
         
         size_factor = vehicle_specs.get('mass', 1800) / 1800
