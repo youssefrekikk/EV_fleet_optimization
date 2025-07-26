@@ -12,7 +12,7 @@ DRIVER_PROFILES = {
         'proportion': 0.35
     },
     'rideshare': {
-        'daily_km': (240, 480),          # km per day
+        'daily_km': (160, 320),          # km per day
         'trips_per_day': (15, 25),
         'avg_speed_city': 22,            # km/h (more stop-and-go)
         'avg_speed_highway': 85,         # km/h
@@ -24,7 +24,7 @@ DRIVER_PROFILES = {
         'proportion': 0.25
     },
     'delivery': {
-        'daily_km': (160, 320),          # km per day
+        'daily_km': (240, 480),          # km per day
         'trips_per_day': (20, 40),
         'avg_speed_city': 20,            # km/h (lots of stops)
         'avg_speed_highway': 80,         # km/h

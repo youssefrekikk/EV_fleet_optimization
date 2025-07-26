@@ -3,10 +3,10 @@ PHYSICS_CONSTANTS = {
     'air_density': 1.225,               # kg/m³ at sea level
     'rolling_resistance': 0.008,        # Updated: typical for modern EV tires
     'gravity': 9.81,                    # m/s²
-    'regen_efficiency': 0.7,            # 70% energy recovery on braking
+    'regen_efficiency': 0.8,            # 70% energy recovery on braking
     'motor_efficiency': 0.9,            # 90% motor efficiency
     'battery_efficiency': 0.95,         # 95% battery efficiency
-    'hvac_base_power': 1,            # kW base HVAC consumption
+    'hvac_base_power': 2,            # kW base HVAC consumption
     'auxiliary_power': 0.25,            # kW for lights, electronics, etc.
     
     # New advanced physics constants
@@ -25,7 +25,7 @@ PHYSICS_CONSTANTS = {
     'target_cabin_temp': 21.0,         # °C target cabin temperature
     
     # Rolling resistance factors
-    'rolling_resistance_speed_factor': 0.1,    # 10% increase per 100 km/h
+    'rolling_resistance_speed_factor': 0.15,    # 10% increase per 100 km/h
     'rolling_resistance_cold_factor': 1.15,    # 15% increase in cold (<0°C)
     'rolling_resistance_hot_factor': 1.05,     # 5% increase in heat (>35°C)
     'rolling_resistance_rain_factor': 1.2,     # 20% increase in rain
@@ -37,8 +37,8 @@ PHYSICS_CONSTANTS = {
     'regen_speed_threshold': 15.0,             # m/s - full efficiency above this speed
     'regen_hard_braking_threshold': 3.0,       # m/s² - hard braking threshold
     'regen_moderate_braking_threshold': 1.5,   # m/s² - moderate braking threshold
-    'regen_hard_braking_efficiency': 0.5,      # 50% efficiency for hard braking
-    'regen_moderate_braking_efficiency': 0.8,  # 80% efficiency for moderate braking
+    'regen_hard_braking_efficiency': 0.6,      # 50% efficiency for hard braking
+    'regen_moderate_braking_efficiency': 0.85,  # 80% efficiency for moderate braking
     
     # Minimum consumption parameters
     'min_consumption_per_km': 0.02,            # kWh/km minimum consumption
