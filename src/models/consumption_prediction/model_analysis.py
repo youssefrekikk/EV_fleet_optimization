@@ -12,7 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import learning_curve, validation_curve
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score , mean_absolute_percentage_error
 from scipy import stats
 from scipy.stats import pearsonr
 import warnings
@@ -86,7 +86,7 @@ class ModelAnalyzer:
             mae = mean_absolute_error(y_true, y_pred)
             rmse = np.sqrt(mean_squared_error(y_true, y_pred))
             r2 = r2_score(y_true, y_pred)
-            mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+            mape = mean_absolute_percentage_error(y_true, y_pred)
             
             performance_data.append({
                 'Dataset': name,
@@ -134,54 +134,161 @@ class ModelAnalyzer:
         }
         
         return perf_df
-    
     def _plot_learning_curves(self, model):
         """Plot learning curves to visualize overfitting"""
+        import xgboost as xgb
+        from xgboost.callback import EarlyStopping
+        from sklearn.model_selection import train_test_split
+        import matplotlib.pyplot as plt
+        import numpy as np
+        from sklearn.metrics import r2_score
+        from scipy import stats
+
         print("\nGenerating learning curves...")
-        
-        # Create combined training data for learning curve
+
+        # Create combined training data
         X_combined = pd.concat([self.X_train, self.X_val])
         y_combined = pd.concat([self.y_train, self.y_val])
-        
-        train_sizes, train_scores, val_scores = learning_curve(
-            model, X_combined, y_combined, 
-            train_sizes=np.linspace(0.1, 1.0, 10),
-            cv=5, scoring='r2', n_jobs=-1
-        )
-        
+
+        # Define train sizes (percentage of training data)
+        train_sizes_pct = np.linspace(0.1, 1.0, 5)
+        # Use fractions for train_size instead of absolute numbers to avoid errors
+        train_sizes = train_sizes_pct.tolist()
+
+        # Initialize score arrays
+        train_scores = []
+        val_scores = []
+
+        # Get original model parameters
+        model_params = model.get_params()
+        # Remove parameters that xgboost.train does not accept
+        for param in ['n_estimators', 'eval_metric', 'early_stopping_rounds', 'callbacks', 'verbose']:
+            model_params.pop(param, None)
+
+        # For each training size
+        for size in train_sizes:
+            # Split data for this training size
+            # Fix: if train_size == 1.0, reduce slightly to avoid error
+            if size == 1.0:
+                size = 0.999
+            # Step 1: Sample a subset from the whole data
+            X_sampled, _, y_sampled, _ = train_test_split(
+                X_combined, y_combined, train_size=size, random_state=42
+            )
+
+            # Step 2: Split into train/validation
+            X_train_sub, X_val_sub, y_train_sub, y_val_sub = train_test_split(
+                X_sampled, y_sampled, test_size=0.2, random_state=42
+            )
+
+            # Create DMatrix for xgboost.train
+            dtrain = xgb.DMatrix(X_train_sub, label=y_train_sub)
+            dval = xgb.DMatrix(X_val_sub, label=y_val_sub)
+
+            evals = [(dtrain, 'train'), (dval, 'eval')]
+
+            # Set number of boosting rounds
+            num_boost_round = 100
+
+            # Train with early stopping using xgboost.train
+            bst = xgb.train(
+                params=model_params,
+                dtrain=dtrain,
+                num_boost_round=num_boost_round,
+                evals=evals,
+                early_stopping_rounds=20,
+                verbose_eval=False
+            )
+
+            # Predict on train and val
+            # Use best_iteration attribute instead of best_ntree_limit for newer xgboost versions
+            best_iter = getattr(bst, 'best_iteration', None)
+            if best_iter is not None:
+                train_pred = bst.predict(dtrain, iteration_range=(0, best_iter + 1))
+                val_pred = bst.predict(dval, iteration_range=(0, best_iter + 1))
+            else:
+                train_pred = bst.predict(dtrain)
+                val_pred = bst.predict(dval)
+
+            # Calculate R2 scores
+            train_score = r2_score(y_train_sub, train_pred)
+            val_score = r2_score(y_val_sub, val_pred)
+
+            train_scores.append(train_score)
+            val_scores.append(val_score)
+
+        # Convert scores to numpy arrays
+        train_scores = np.array(train_scores)
+        val_scores = np.array(val_scores)
+
+        # Plot learning curve
         plt.figure(figsize=(12, 8))
-        
-        # Learning curve
         plt.subplot(2, 2, 1)
-        plt.plot(train_sizes, np.mean(train_scores, axis=1), 'o-', label='Training Score', color='blue')
-        plt.plot(train_sizes, np.mean(val_scores, axis=1), 'o-', label='Validation Score', color='red')
-        plt.fill_between(train_sizes, np.mean(train_scores, axis=1) - np.std(train_scores, axis=1),
-                         np.mean(train_scores, axis=1) + np.std(train_scores, axis=1), alpha=0.1, color='blue')
-        plt.fill_between(train_sizes, np.mean(val_scores, axis=1) - np.std(val_scores, axis=1),
-                         np.mean(val_scores, axis=1) + np.std(val_scores, axis=1), alpha=0.1, color='red')
+        plt.plot(train_sizes, train_scores, 'o-', label='Training Score', color='blue')
+        plt.plot(train_sizes, val_scores, 'o-', label='Validation Score', color='red')
         plt.xlabel('Training Set Size')
         plt.ylabel('R² Score')
         plt.title('Learning Curves - Overfitting Analysis')
         plt.legend()
         plt.grid(True, alpha=0.3)
-        
+
         # Validation curve for max_depth
         plt.subplot(2, 2, 2)
         param_range = range(3, 11)
-        train_scores, val_scores = validation_curve(
-            type(model)(), X_combined, y_combined,
-            param_name='max_depth', param_range=param_range,
-            cv=3, scoring='r2'
-        )
-        
-        plt.plot(param_range, np.mean(train_scores, axis=1), 'o-', label='Training', color='blue')
-        plt.plot(param_range, np.mean(val_scores, axis=1), 'o-', label='Validation', color='red')
+        max_depth_train_scores = []
+        max_depth_val_scores = []
+
+        for depth in param_range:
+            # Split data
+            X_train_sub, X_val_sub, y_train_sub, y_val_sub = train_test_split(
+                X_combined, y_combined, test_size=0.2, random_state=42
+            )
+
+            # Create DMatrix
+            dtrain = xgb.DMatrix(X_train_sub, label=y_train_sub)
+            dval = xgb.DMatrix(X_val_sub, label=y_val_sub)
+            evals = [(dtrain, 'train'), (dval, 'eval')]
+
+            # Update model params with max_depth
+            params = model_params.copy()
+            params['max_depth'] = depth
+
+            # Train with early stopping
+            bst = xgb.train(
+                params=params,
+                dtrain=dtrain,
+                num_boost_round=100,
+                evals=evals,
+                early_stopping_rounds=20,
+                verbose_eval=False
+            )
+
+            # Predict
+            # Use best_iteration attribute instead of best_ntree_limit for newer xgboost versions
+            best_iter = getattr(bst, 'best_iteration', None)
+            if best_iter is not None:
+                train_pred = bst.predict(dtrain, iteration_range=(0, best_iter + 1))
+                val_pred = bst.predict(dval, iteration_range=(0, best_iter + 1))
+            else:
+                train_pred = bst.predict(dtrain)
+                val_pred = bst.predict(dval)
+
+            # Calculate R2
+            train_score = r2_score(y_train_sub, train_pred)
+            val_score = r2_score(y_val_sub, val_pred)
+
+            max_depth_train_scores.append(train_score)
+            max_depth_val_scores.append(val_score)
+
+        # Plot validation curve
+        plt.plot(param_range, max_depth_train_scores, 'o-', label='Training', color='blue')
+        plt.plot(param_range, max_depth_val_scores, 'o-', label='Validation', color='red')
         plt.xlabel('Max Depth')
         plt.ylabel('R² Score')
         plt.title('Validation Curve - Max Depth')
         plt.legend()
         plt.grid(True, alpha=0.3)
-        
+
         # Residuals plot
         plt.subplot(2, 2, 3)
         test_pred = model.predict(self.X_test)
@@ -192,17 +299,19 @@ class ModelAnalyzer:
         plt.ylabel('Residuals')
         plt.title('Residuals Plot - Test Set')
         plt.grid(True, alpha=0.3)
-        
+
         # Q-Q plot for residuals normality
         plt.subplot(2, 2, 4)
         stats.probplot(residuals, dist="norm", plot=plt)
         plt.title('Q-Q Plot - Residuals Normality')
         plt.grid(True, alpha=0.3)
-        
+
         plt.tight_layout()
         plt.savefig('overfitting_analysis.png', dpi=300, bbox_inches='tight')
         plt.show()
-    
+
+
+
     def analyze_feature_importance(self):
         """Comprehensive feature importance analysis"""
         print("\n" + "="*60)

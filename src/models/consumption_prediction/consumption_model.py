@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.metrics import mean_absolute_percentage_error
 try:
     import xgboost as xgb
     XGBOOST_AVAILABLE = True
@@ -22,10 +23,19 @@ warnings.filterwarnings('ignore')
 
 class EVConsumptionPredictor:
     """
-    Electric Vehicle Consumption Prediction Model
+    🎯 PREDICTIVE MODEL - EV Energy Consumption Prediction
     
-    This class implements multiple ML models to predict EV energy consumption
-    based on trip characteristics, weather conditions, and vehicle specifications.
+    Predicts energy consumption (kWh) BEFORE trip starts using only features
+    available at planning time (no look-ahead bias).
+    
+    Features used:
+    - Trip planning: straight-line distance from coordinates
+    - Time: hour, weekend status  
+    - Weather: forecast data
+    - Vehicle: specifications and characteristics
+    - Driver: profile and behavior patterns
+    
+    Target: total_consumption_kwh
     """
     
     def __init__(self, data_path: str = None):
@@ -197,13 +207,10 @@ class EVConsumptionPredictor:
     def engineer_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """Create additional features for better prediction"""
         
-        # Time-based features
+        # Time-based features (reduced to most important ones)
         data['date'] = pd.to_datetime(data['date'])
         data['hour'] = data['date'].dt.hour
-        data['day_of_week'] = data['date'].dt.dayofweek
-        data['month'] = data['date'].dt.month
-        data['is_weekend'] = (data['day_of_week'] >= 5).astype(int)
-        data['is_rush_hour'] = ((data['hour'].between(7, 9)) | (data['hour'].between(17, 19))).astype(int)
+        data['is_weekend'] = (pd.to_datetime(data['date']).dt.dayofweek >= 5).astype(int)
         
         # Distance and speed features
         data['avg_speed_kmh'] = np.where(data['total_time_minutes'] > 0,
@@ -245,40 +252,43 @@ class EVConsumptionPredictor:
         return data
     
     def prepare_features(self, data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
-        """Prepare features and target variable"""
+        """
+        Prepare features and target variable with optimized encoding:
+        - driving_style: Ordinal encoding (eco_friendly=0 < normal=1 < aggressive=2)
+        - Other categoricals: One-hot encoding (driver_profile, model, etc.)
+        - Time features: Reduced to hour + is_weekend only
+        """
         
         # Target variable
         target = data['total_consumption_kwh']
         
-        # Feature selection - Updated with new features
+        # 🎯 PREDICTIVE MODEL: Features available BEFORE trip starts
         feature_cols = [
-            # Trip characteristics
-            'total_distance_km', 'total_time_minutes', 'avg_speed_kmh', 'distance_per_minute',
+            # Trip planning (available from coordinates)
+            'straight_line_distance_km',  # From origin/destination coordinates
+            
+            # Location clustering (available from coordinates)
+            'origin_cluster', 'destination_cluster', 'same_cluster',
             
             # Time features
-            'hour', 'day_of_week', 'month', 'is_weekend', 'is_rush_hour',
+            'hour', 'is_weekend',
             
-            # Weather features
-            'temperature_celsius', 'temp_squared', 'temp_deviation', 'weather_wind_speed_kmh', 
-            'weather_humidity', 'wind_impact', 'rain_impact', 'weather_is_raining',
+            # Weather forecast (simplified - most relevant only)
+            'temperature_celsius', 
             
-            # Vehicle features
+            # Vehicle specifications (known)
             'battery_capacity', 'efficiency', 'max_charging_speed', 'fast_charging_capable',
             'home_charging_available',
             
-            # Location and route features
-            'origin_cluster', 'destination_cluster', 'same_cluster', 'route_efficiency',
-            'straight_line_distance_km',
+            # Driver characteristics (known)
+            'driver_profile', 'model', 'driving_style', 'driver_personality',
             
-            # Historical/aggregate features
-            'vehicle_avg_consumption_7d', 'vehicle_avg_efficiency_7d', 'driver_avg_consumption_7d',
-            'trips_last_7d', 'vehicle_total_distance_7d',
+            # Historical patterns (available from past data)
+            'vehicle_avg_consumption_7d', 'vehicle_avg_efficiency_7d', 
+            'trips_last_7d',
             
-            # Temperature efficiency (if available)
-            'temperature_efficiency_factor',
-            
-            # Categorical features
-            'driver_profile', 'model', 'driving_style', 'driver_personality', 'weather_season', 'trip_type'
+            # Temperature efficiency (can be estimated from forecast)
+            'temperature_efficiency_factor'
         ]
         
         # Only select features that exist in the data
@@ -290,16 +300,36 @@ class EVConsumptionPredictor:
         
         features = data[available_features].copy()
         
-        # Handle categorical variables (only those that exist in features)
-        categorical_cols = ['driver_profile', 'model', 'driving_style', 'driver_personality', 'weather_season', 'trip_type']
-        available_categorical = [col for col in categorical_cols if col in features.columns]
+        # Handle categorical variables with appropriate encoding strategies
+        
+        # 1. ORDINAL ENCODING for driving_style (preserves consumption order)
+        if 'driving_style' in features.columns:
+            if 'driving_style' not in self.encoders:
+                # Create ordinal mapping: eco_friendly (0) < normal (1) < aggressive (2)
+                driving_style_map = {'eco_friendly': 0, 'normal': 1, 'aggressive': 2}
+                features['driving_style'] = features['driving_style'].map(driving_style_map)
+                self.encoders['driving_style'] = driving_style_map
+            else:
+                features['driving_style'] = features['driving_style'].map(self.encoders['driving_style'])
+        
+        # 2. LABEL ENCODING for other categorical features (simple approach)
+        label_encode_cols = ['driver_profile', 'model', 'driver_personality', 'weather_season']
+        available_categorical = [col for col in label_encode_cols if col in features.columns]
         
         for col in available_categorical:
             if col not in self.encoders:
                 self.encoders[col] = LabelEncoder()
                 features[col] = self.encoders[col].fit_transform(features[col].astype(str))
             else:
-                features[col] = self.encoders[col].transform(features[col].astype(str))
+                # Handle unseen categories by mapping to most common class (0)
+                values = features[col].astype(str)
+                encoded_values = []
+                for val in values:
+                    if val in self.encoders[col].classes_:
+                        encoded_values.append(self.encoders[col].transform([val])[0])
+                    else:
+                        encoded_values.append(0)  # Default to first class
+                features[col] = encoded_values
         
         # Handle missing values
         features = features.fillna(features.median())
@@ -308,6 +338,73 @@ class EVConsumptionPredictor:
         self.feature_columns = features.columns.tolist()
         
         return features, target
+    
+    def grid_search_xgboost(self, X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series):
+        """Perform grid search for XGBoost hyperparameters"""
+        from sklearn.model_selection import ParameterGrid
+        
+        param_grid = {
+            'max_depth': [3, 4, 5, 6],
+            'min_child_weight': [1, 3, 5],
+            'reg_alpha': [0, 0.1, 0.5],
+            'reg_lambda': [1, 1.5, 2],
+            'learning_rate': [0.01, 0.05, 0.1]
+        }
+        
+        best_score = -np.inf
+        best_params = None
+        best_model = None
+        
+        for params in ParameterGrid(param_grid):
+            # Use callbacks for early stopping in newer XGBoost versions
+            try:
+                # Try using the callbacks API (newer XGBoost versions)
+                from xgboost.callback import EarlyStopping
+                callbacks = [EarlyStopping(rounds=20)]
+                
+                model = xgb.XGBRegressor(
+                    n_estimators=100,
+                    random_state=42,
+                    eval_metric='mape',
+                    **params
+                )
+                model.fit(
+                    X_train, y_train,
+                    eval_set=[(X_val, y_val)],
+                    callbacks=callbacks,
+                    verbose=False
+                )
+            except (ImportError, TypeError):
+                # Fallback for older XGBoost versions
+                model = xgb.XGBRegressor(
+                    n_estimators=100,
+                    random_state=42,
+                    eval_metric='mape',
+                    early_stopping_rounds=20,
+                    **params
+                )
+                model.fit(
+                    X_train, y_train,
+                    eval_set=[(X_val, y_val)],
+                    verbose=False
+                )
+            y_pred = model.predict(X_val)
+            r2 = r2_score(y_val, y_pred)
+            
+            if r2 > best_score:
+                best_score = r2
+                best_params = params
+                best_model = model
+        
+        self.models['xgboost'] = best_model
+        self.model_performance['xgboost'] = {
+            'mape': best_score
+            
+        }
+        self.feature_importance['xgboost'] = dict(zip(X_train.columns, best_model.feature_importances_))
+        
+        self.logger.info(f"Best XGBoost params: {best_params}")
+        self.logger.info(f"Best XGBoost MAPE: {best_score:.4f}")
     
     def train_models(self, X_train: pd.DataFrame, y_train: pd.Series, X_val: pd.DataFrame, y_val: pd.Series):
         """Train multiple models and compare performance"""
@@ -336,17 +433,7 @@ class EVConsumptionPredictor:
             )
         }
         
-        # Add XGBoost if available
-        if XGBOOST_AVAILABLE:
-            models_config['xgboost'] = xgb.XGBRegressor(
-                n_estimators=100,
-                max_depth=6,
-                learning_rate=0.1,
-                random_state=42,
-                eval_metric='rmse'
-            )
-        
-        # Train and evaluate models
+        # Train and evaluate models except XGBoost
         for name, model in models_config.items():
             self.logger.info(f"Training {name}...")
             
@@ -362,26 +449,53 @@ class EVConsumptionPredictor:
             mse = mean_squared_error(y_val, y_pred)
             rmse = np.sqrt(mse)
             r2 = r2_score(y_val, y_pred)
+            mape= mean_absolute_percentage_error(y_val, y_pred)
             
             self.models[name] = model
             self.model_performance[name] = {
                 'MAE': mae,
                 'MSE': mse,
                 'RMSE': rmse,
-                'R2': r2
+                'R2': r2,
+                'MAPE':mape,
             }
             
             # Feature importance for tree-based models
             if hasattr(model, 'feature_importances_'):
                 self.feature_importance[name] = dict(zip(X_train.columns, model.feature_importances_))
             
-            self.logger.info(f"{name} - MAE: {mae:.4f}, RMSE: {rmse:.4f}, R2: {r2:.4f}")
+            self.logger.info(f"{name} - MAE: {mae:.4f}, RMSE: {rmse:.4f}, R2: {r2:.4f} MAPE: {mape:.4f}")
+        
+        # Perform grid search for XGBoost
+        if XGBOOST_AVAILABLE:
+            self.logger.info("Performing grid search for XGBoost...")
+            self.grid_search_xgboost(X_train, y_train, X_val, y_val)
     
     def get_best_model(self) -> str:
-        """Select best model based on R2 score"""
-        best_model = max(self.model_performance.keys(), 
-                        key=lambda x: self.model_performance[x]['R2'])
+        """Select best model based on MAE score"""
+        best_model = min(self.model_performance.keys(), 
+                        key=lambda x: -self.model_performance[x].get('MAE', float('inf')))
         return best_model
+
+    def get_best_models_per_metric(self) -> Dict[str, str]:
+        """Select best model for each metric"""
+        best_models = {}
+        metrics = ['MAE', 'MSE', 'RMSE', 'R2', 'MAPE']
+        for metric in metrics:
+            if metric == 'R2':
+                # For R2, higher is better
+                best_model = max(
+                    self.model_performance.keys(),
+                    key=lambda x: self.model_performance[x].get(metric, float('-inf'))
+                )
+            else:
+                # For other metrics, lower is better
+                best_model = min(
+                    self.model_performance.keys(),
+                    key=lambda x: self.model_performance[x].get(metric, float('inf'))
+                )
+            best_models[metric] = best_model
+        return best_models
     
     def predict(self, features: pd.DataFrame, model_name: str = None) -> np.ndarray:
         """Make predictions using trained model"""
@@ -410,12 +524,9 @@ class EVConsumptionPredictor:
             'avg_speed_kmh': distance_km / (time_minutes / 60) if time_minutes > 0 else 0,
             'distance_per_minute': distance_km / time_minutes if time_minutes > 0 else 0,
             
-            # Time features
+            # Time features (reduced)
             'hour': kwargs.get('hour', 12),
-            'day_of_week': kwargs.get('day_of_week', 1),
-            'month': kwargs.get('month', 6),
             'is_weekend': kwargs.get('is_weekend', 0),
-            'is_rush_hour': kwargs.get('is_rush_hour', 0),
             
             # Weather features
             'temperature_celsius': temperature,
@@ -473,21 +584,26 @@ class EVConsumptionPredictor:
         # Convert to DataFrame
         trip_df = pd.DataFrame([trip_data])
         
-        # Encode categorical variables
-        categorical_cols = ['driver_profile', 'model', 'driving_style', 'driver_personality', 'weather_season', 'trip_type']
-        for col in categorical_cols:
-            if col in self.encoders:
-                # Handle unseen labels by mapping to most common class
-                encoder = self.encoders[col]
-                values = trip_df[col].astype(str)
-                encoded_values = []
-                for val in values:
-                    if val in encoder.classes_:
-                        encoded_values.append(encoder.transform([val])[0])
-                    else:
-                        # Use the most frequent class (index 0) for unseen labels
-                        encoded_values.append(0)
-                trip_df[col] = encoded_values
+        # Encode categorical variables using the same approach as training
+        
+        # 1. Handle driving_style with ordinal encoding
+        if 'driving_style' in trip_df.columns and 'driving_style' in self.encoders:
+            driving_style_val = trip_df['driving_style'].iloc[0]
+            if driving_style_val in self.encoders['driving_style']:
+                trip_df['driving_style'] = self.encoders['driving_style'][driving_style_val]
+            else:
+                # Default to 'normal' (1) for unknown driving styles
+                trip_df['driving_style'] = 1
+        
+        # 2. Handle other categorical features with label encoding
+        label_encode_cols = ['driver_profile', 'model', 'driver_personality', 'weather_season']
+        for col in label_encode_cols:
+            if col in trip_df.columns and col in self.encoders:
+                value = trip_df[col].iloc[0]
+                if value in self.encoders[col].classes_:
+                    trip_df[col] = self.encoders[col].transform([value])[0]
+                else:
+                    trip_df[col] = 0  # Default to first class for unknown values
         
         # Ensure we have all required features and in the correct order
         if self.feature_columns is not None:
@@ -599,10 +715,18 @@ def main():
     
     test_predictions = predictor.predict(X_test, best_model)
     test_mae = mean_absolute_error(y_test, test_predictions)
-    test_rmse = np.sqrt(mean_squared_error(y_test, test_predictions))
+    test_mse = mean_squared_error(y_test, test_predictions)
+    test_rmse = np.sqrt(test_mse)
     test_r2 = r2_score(y_test, test_predictions)
+    test_mape= mean_absolute_percentage_error(y_test, test_predictions)
     
-    print(f"Test performance - MAE: {test_mae:.4f}, RMSE: {test_rmse:.4f}, R2: {test_r2:.4f}")
+    print(f"Test performance - MAE: {test_mae:.4f}, RMSE: {test_rmse:.4f}, R2: {test_r2:.4f}" , f"MAPE: {test_mape:.4f}")
+    
+    # Display best model for each metric
+    best_models_per_metric = predictor.get_best_models_per_metric()
+    print("\nBest models per metric:")
+    for metric, model_name in best_models_per_metric.items():
+        print(f"{metric}: {model_name}")
     
     # Save model
     model_path = Path(__file__).parent / "consumption_model.pkl"
@@ -625,3 +749,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
