@@ -55,10 +55,10 @@ class AdvancedEVEnergyModel:
     
 
 
-    def calculate_energy_consumption(self, gps_trace: List[Dict], vehicle: Dict, 
-                                   weather_conditions: Dict) -> Dict:
+    def calculate_energy_consumption(self, gps_trace: List[Dict], vehicle: Dict, weather_conditions: Dict, return_segments: bool = False) -> Dict:
         """
         Calculate energy consumption using advanced physics-based model
+        If return_segments is True, also return a list of segment-level details for export.
         """
         vehicle_id = vehicle.get('vehicle_id', 'unknown')
         self._log_detailed(f"\n{'='*60}", vehicle_id)
@@ -91,6 +91,7 @@ class AdvancedEVEnergyModel:
         battery_params = self._calculate_battery_parameters(ambient_temp_k, vehicle_specs)
         
         # Process each GPS segment
+        segment_details = [] if return_segments else None
         segment_count = 0
         valid_segments = 0
 
@@ -146,6 +147,32 @@ class AdvancedEVEnergyModel:
                     # Update breakdown
                     for component, value in segment_result['breakdown'].items():
                         consumption_breakdown[component] += value
+                    # Collect segment details if requested
+                    if return_segments:
+                        seg = {
+                            'segment_id': segment_count - 1,
+                            'start_lat': gps_trace[i]['latitude'],
+                            'start_lon': gps_trace[i]['longitude'],
+                            'end_lat': gps_trace[i+1]['latitude'],
+                            'end_lon': gps_trace[i+1]['longitude'],
+                            'start_time': gps_trace[i]['timestamp'],
+                            'end_time': gps_trace[i+1]['timestamp'],
+                            'start_elevation_m': gps_trace[i].get('elevation_m', None),
+                            'end_elevation_m': gps_trace[i+1].get('elevation_m', None),
+                            'start_speed_kmh': gps_trace[i].get('speed_kmh', None),
+                            'end_speed_kmh': gps_trace[i+1].get('speed_kmh', None),
+                            'heading': gps_trace[i].get('heading', None),
+                            'distance_m': segment_result['distance_km'] * 1000,
+                            'energy_kwh': segment_result['energy_kwh'],
+                            # Add breakdowns
+                            **{f'energy_{k}_kwh': v for k, v in segment_result['breakdown'].items()},
+                            # Add weather info
+                            'weather_temp_c': weather_conditions.get('temperature', None),
+                            'weather_wind_kmh': weather_conditions.get('wind_speed_kmh', None),
+                            'weather_is_raining': weather_conditions.get('is_raining', None),
+                            'weather_humidity': weather_conditions.get('humidity', None),
+                        }
+                        segment_details.append(seg)
                     self._log_detailed(f"Segment {segment_count}: {segment_result['distance_km']:.3f}km, "
                                     f"{segment_result['energy_kwh']:.4f}kWh, "
                                     f"efficiency: {(segment_result['energy_kwh']/segment_result['distance_km']*100):.2f}kWh/100km", 
@@ -208,6 +235,8 @@ class AdvancedEVEnergyModel:
         self._log_detailed(f"\nFINAL RESULT: {final_result}", vehicle_id)
         self._log_detailed(f"{'='*60}\n", vehicle_id)
 
+        if return_segments:
+            return final_result, segment_details
         return final_result
     
     def _calculate_battery_parameters(self, temp_k: float, vehicle_specs: Dict) -> Dict:
@@ -298,7 +327,9 @@ class AdvancedEVEnergyModel:
         energy_breakdown['hvac'] = hvac_power_w * time_diff_s
         self._log_detailed(f"HVAC power: {hvac_power_w:.1f}W for {time_diff_s:.1f}s = {hvac_power_w * time_diff_s / 3.6e6:.4f}kWh", vehicle_id)
         # 6. Auxiliary systems energy
-        aux_power_w = vehicle_specs['auxiliary_power'] * 1000 * 0.5  # Convert kW to W
+        # Make auxiliary usage factor configurable to avoid hard-coded fudge factors
+        aux_usage_factor = self.constants.get('auxiliary_usage_factor', 0.5)
+        aux_power_w = vehicle_specs['auxiliary_power'] * 1000 * aux_usage_factor  # Convert kW to W
         energy_breakdown['auxiliary'] = aux_power_w * time_diff_s
         
         # 7. Battery thermal losses (I²R losses)
@@ -385,7 +416,9 @@ class AdvancedEVEnergyModel:
         
         # Add wind resistance
         wind_speed_ms = weather.get('wind_speed_kmh', 0) / 3.6
-        relative_wind_speed = speed_ms + wind_speed_ms  # Simplified head/tail wind
+        # Without wind direction, use RMS combination to avoid systematic headwind bias
+        # E[v_rel^2] ≈ v^2 + w^2 for random wind directions
+        relative_wind_speed = math.sqrt(max(0.0, speed_ms**2 + wind_speed_ms**2))
         aero_force = 0.5 * air_density * vehicle_specs['drag_coefficient'] * vehicle_specs['frontal_area'] * relative_wind_speed**2
         
         # Elevation force (gravitational potential energy change)
