@@ -1860,7 +1860,7 @@ class SyntheticEVGenerator:
         
         # Track battery state throughout the day
         current_soc = vehicle['current_battery_soc']
-        battery_capacity = vehicle['battery_capacity']
+        nominal_battery_capacity = vehicle['battery_capacity']
         
         # Use driving style for charging threshold
         charging_threshold = driving_style['charging_threshold']
@@ -1900,9 +1900,10 @@ class SyntheticEVGenerator:
             # Update current time
             current_time = route_end_time
             
-            # Consume energy for this route
+            # Consume energy for this route using temperature-adjusted effective capacity
             consumption_kwh = route['consumption_data']['total_consumption_kwh']
-            energy_consumed_percent = consumption_kwh / battery_capacity
+            effective_capacity_kwh = self._effective_battery_capacity(vehicle, route_end_time.date())
+            energy_consumed_percent = consumption_kwh / max(1e-6, effective_capacity_kwh)
             current_soc -= energy_consumed_percent
             
             # 🔧 FIX: Realistic minimum SOC protection - modern EVs prevent deep discharge
@@ -1998,12 +1999,10 @@ class SyntheticEVGenerator:
                         vehicle, charging_start_time, current_soc
                     )
                 else:
-                    # Public charging - use simplified infrastructure method
-                    travel_to_station_minutes = np.random.randint(10, 45)  # Time to find and reach station
-                    charging_start_time = route_end_time + timedelta(minutes=travel_to_station_minutes)
-                    
+                    # Public charging with explicit detour modeling handled inside helper
+                    charging_start_time = route_end_time
                     charging_session = self._generate_public_charging_session_with_infrastructure(
-                        vehicle, route['destination'], charging_start_time, current_soc, needs_charging,next_destination
+                        vehicle, route['destination'], charging_start_time, current_soc, needs_charging, next_destination
                     )
                 
                 if charging_session:
@@ -2067,6 +2066,24 @@ class SyntheticEVGenerator:
         # Persist SOC back to vehicle for next-day continuity
         vehicle['current_battery_soc'] = float(np.clip(current_soc, 0.0, 1.0))
         return charging_sessions
+
+    def _effective_battery_capacity(self, vehicle: Dict, on_date: datetime) -> float:
+        """Compute temperature-adjusted effective battery capacity (kWh) for the given date."""
+        try:
+            from config.physics_constants import PHYSICS_CONSTANTS
+        except Exception:
+            PHYSICS_CONSTANTS = {
+                'reference_temp_k': 293.15,
+                'temp_capacity_alpha': 0.05,
+            }
+        # Use the same weather generator to approximate ambient temperature on that date
+        weather = self._get_weather_conditions(on_date)
+        temp_c = weather.get('temperature', 20.0)
+        temp_k = temp_c + 273.15
+        ref_k = PHYSICS_CONSTANTS.get('reference_temp_k', 293.15)
+        alpha = PHYSICS_CONSTANTS.get('temp_capacity_alpha', 0.05)
+        capacity_factor = (temp_k / ref_k) ** alpha
+        return vehicle.get('battery_capacity', 60.0) * capacity_factor
 
 
 
@@ -2270,9 +2287,25 @@ class SyntheticEVGenerator:
         
         # Ensure reasonable bounds
         target_soc = max(start_soc + 0.05, min(0.95, target_soc))
-        
-        battery_capacity = vehicle['battery_capacity']
-        energy_needed = max(0, (target_soc - start_soc) * battery_capacity)
+
+        # Pre-detour leg: from current location to station
+        station_coords = (selected_station.get('latitude', 0.0), selected_station.get('longitude', 0.0))
+        try:
+            to_station = self._generate_fallback_route_with_timing(
+                location, station_coords, vehicle, start_time, trip_id=9999
+            )
+            to_energy_kwh = to_station['consumption_data']['total_consumption_kwh']
+            to_time_min = to_station['total_time_minutes']
+            eff_cap_kwh = self._effective_battery_capacity(vehicle, start_time.date())
+            start_soc = max(0.12, start_soc - to_energy_kwh / max(1e-6, eff_cap_kwh))
+            start_time = start_time + timedelta(minutes=to_time_min)
+        except Exception:
+            # If detour fails, keep start_soc/start_time unchanged
+            pass
+
+        # Energy to charge based on updated start_soc and EFFECTIVE capacity
+        eff_cap_kwh = self._effective_battery_capacity(vehicle, start_time.date())
+        energy_needed = max(0, (target_soc - start_soc) * eff_cap_kwh)
         # Determine charging power based on station and vehicle capabilities
         station_max_power = selected_station.get('max_power_kw', 22)  # Default 22kW
         vehicle_max_power = vehicle.get('max_charging_speed', 50)     # Vehicle limit
@@ -2322,7 +2355,9 @@ class SyntheticEVGenerator:
             'cost_per_kwh': round(cost_per_kwh, 3),
             'is_emergency_charging': is_emergency,
             'connector_type': selected_station.get('connector_types', ['Unknown'])[0] if selected_station.get('connector_types') else 'Unknown',
-            'distance_to_station_km': selected_station.get('distance_km', 0)
+            'distance_to_station_km': selected_station.get('distance_km', 0),
+            'station_lat': float(selected_station.get('latitude', 0.0)),
+            'station_lon': float(selected_station.get('longitude', 0.0))
         }
         
         return charging_session
@@ -3068,8 +3103,8 @@ def main():
     
     # Configuration override for testing
     config_override = {
-        'fleet': {'fleet_size': 10},  # Smaller fleet for testing
-        'simulation': {'simulation_days': 14}  # One week of data
+        'fleet': {'fleet_size': 15},  # Smaller fleet for testing
+        'simulation': {'simulation_days': 21}  # One week of data
     }
     
     # Initialize generator
@@ -3083,7 +3118,7 @@ def main():
     print(f"\n📊 Network Status: {network_info}")
 
     # Generate complete dataset
-    datasets = generator.generate_complete_dataset(num_days=10)
+    datasets = generator.generate_complete_dataset(num_days=21)
     
     # Save datasets
     saved_files = generator.save_datasets(datasets)
