@@ -1,269 +1,76 @@
 # EV Fleet Logging System
 
-A centralized logging system for the EV Fleet Optimization project that provides easy on/off switching and consistent logging across all modules.
+Centralized logging with mode switches, module-level toggles, file/console handlers, and dedicated detailed logs for specific components.
 
-## Features
+## Architecture
 
-- **Easy Mode Switching**: Switch between production, development, debug, silent, and testing modes
-- **Module-Specific Control**: Enable/disable logging for specific modules
-- **Detailed Logging**: Enable detailed logging for specific components (energy calculations, route generation, etc.)
-- **Multiple Output Formats**: Console, file, or both
-- **Consistent Interface**: Same logging interface across all modules
+- Config in `config/logging_config.py` defines modes, module toggles, and detailed components
+- Runtime API in `src/utils/logger.py` exposes `info/warning/error/debug`, `print_summary`, `log_detailed`, and helpers to get/update the global logger
 
-## Quick Start
+## Modes
 
-### 1. Basic Usage
+- Production: WARNING, console only
+- Development: INFO, console+file
+- Debug: DEBUG, console+file, detailed logs enabled
+- Silent: CRITICAL, no output
+- Testing: DEBUG, file only, detailed logs enabled
+
+Switch with `switch_to_production()`, `switch_to_development()`, `switch_to_debug()`, `switch_to_silent()`, `switch_to_testing()`; then call `setup_logger(**get_logging_config())`.
+
+## Usage
 
 ```python
-from config.logging_config import *
-from src.utils.logger import setup_logger, info, warning, error, debug
+from config.logging_config import switch_to_debug, get_logging_config
+from src.utils.logger import setup_logger, info, warning, error, debug, log_detailed, print_summary
 
-# Switch to desired mode
-switch_to_debug()  # or switch_to_production(), switch_to_development(), etc.
-
-# Setup logger
+# Configure and initialize
+switch_to_debug()
 logger = setup_logger(**get_logging_config())
 
-# Use logging functions
-info("This is an info message", "module_name")
-warning("This is a warning", "module_name")
-error("This is an error", "module_name")
-debug("This is a debug message", "module_name")
+info("Dataset generated", "synthetic_ev_generator")
+log_detailed("Segment 42: hvac=0.05kWh", "energy_calculation", vehicle_id="V-001")
+print_summary("RUN SUMMARY", {"trips": 1250, "avg_eff": 18.5})
 ```
 
-### 2. Module-Specific Control
+### Module toggles
 
 ```python
-# Disable logging for specific modules
-disable_module_logging('advanced_energy_model')
+from config.logging_config import enable_module_logging, disable_module_logging, is_module_logging_enabled
+from src.utils.logger import info
+
 disable_module_logging('openchargemap_api')
-
-# Enable logging for specific modules
-enable_module_logging('synthetic_ev_generator')
-```
-
-### 3. Detailed Logging
-
-```python
-# Enable detailed logging for specific components
-enable_detailed_logging('energy_calculation')
-enable_detailed_logging('route_generation')
-
-# Use detailed logging
-from src.utils.logger import log_detailed
-log_detailed("Detailed message", "component_name", "vehicle_id")
-```
-
-## Logging Modes
-
-### Production Mode
-- **Level**: WARNING
-- **Console**: Yes
-- **File**: No
-- **Detailed Logging**: No
-- **Format**: Minimal
-- **Use Case**: Production deployment
-
-### Development Mode
-- **Level**: INFO
-- **Console**: Yes
-- **File**: Yes
-- **Detailed Logging**: No
-- **Format**: Simple
-- **Use Case**: Daily development
-
-### Debug Mode
-- **Level**: DEBUG
-- **Console**: Yes
-- **File**: Yes
-- **Detailed Logging**: Yes
-- **Format**: Detailed
-- **Use Case**: Debugging and analysis
-
-### Silent Mode
-- **Level**: CRITICAL
-- **Console**: No
-- **File**: No
-- **Detailed Logging**: No
-- **Format**: Minimal
-- **Use Case**: Performance testing
-
-### Testing Mode
-- **Level**: DEBUG
-- **Console**: No
-- **File**: Yes
-- **Detailed Logging**: Yes
-- **Format**: Detailed
-- **Use Case**: Automated testing
-
-## Configuration
-
-### Switching Modes
-
-```python
-# Quick mode switches
-switch_to_production()
-switch_to_development()
-switch_to_debug()
-switch_to_silent()
-switch_to_testing()
-
-# Get configuration for specific mode
-config = get_logging_config('DEBUG')
-logger = setup_logger(**config)
-```
-
-### Module-Specific Settings
-
-```python
-# Check if module logging is enabled
 if is_module_logging_enabled('synthetic_ev_generator'):
-    info("Module is enabled", "synthetic_ev_generator")
-
-# Enable/disable specific modules
-enable_module_logging('module_name')
-disable_module_logging('module_name')
+    info("Generator logging enabled", "synthetic_ev_generator")
 ```
 
-### Detailed Logging Components
+### Detailed components
+
+Available keys (default may vary by mode): `energy_calculation`, `route_generation`, `charging_sessions`, `infrastructure`, `gps_trace`.
 
 ```python
-# Available components for detailed logging
-DETAILED_LOGGING_COMPONENTS = {
-    'energy_calculation': False,  # Very verbose energy calculations
-    'route_generation': False,    # Route generation details
-    'charging_sessions': False,   # Charging session details
-    'infrastructure': False,      # Infrastructure management
-    'gps_trace': False           # GPS trace generation
-}
+from config.logging_config import enable_detailed_logging, is_detailed_logging_enabled
+from src.utils.logger import log_detailed
 
-# Enable/disable detailed logging
 enable_detailed_logging('energy_calculation')
-disable_detailed_logging('route_generation')
-
-# Check if detailed logging is enabled
 if is_detailed_logging_enabled('energy_calculation'):
-    log_detailed("Detailed energy calculation", "energy_calculation", "vehicle_id")
+    log_detailed("Forces: rolling=120N,aero=80N", "energy_calculation", vehicle_id="V-001")
 ```
 
-## File Structure
+## Files and directories
 
-```
-src/
-├── utils/
-│   └── logger.py              # Main logging module
-config/
-├── logging_config.py          # Logging configuration
-examples/
-├── logging_example.py         # Usage examples
-debug_logs/                    # Log files directory
-├── ev_fleet_YYYYMMDD_HHMMSS.log
-├── energy_calculation_*.log
-├── route_failures.log
-└── ...
-```
+- Default directory: `debug_logs/`
+- Main rotating file: `ev_fleet_<timestamp>.log`
+- Component logs: `energy_calculation_*.log` etc.
+- Route failures: `route_failures.log` (see `log_route_failure`)
 
-## Advanced Usage
+## Best practices
 
-### Custom Configuration
-
-```python
-# Custom logger configuration
-custom_config = {
-    'log_level': 'DEBUG',
-    'enable_console': True,
-    'enable_file': True,
-    'detailed_logging': True,
-    'log_format': 'detailed',
-    'log_dir': 'custom_logs'
-}
-
-logger = setup_logger(**custom_config)
-```
-
-### Summary Printing
-
-```python
-from src.utils.logger import print_summary
-
-# Print formatted summary
-summary_data = {
-    'Total Routes': 1250,
-    'Total Distance (km)': 15420.5,
-    'Average Efficiency': 18.5
-}
-
-print_summary("DATASET SUMMARY", summary_data)
-```
-
-### Logger Status
-
-```python
-from src.utils.logger import get_global_logger
-
-logger = get_global_logger()
-status = logger.get_status()
-
-print("Current logger status:")
-for key, value in status.items():
-    print(f"  {key}: {value}")
-```
-
-## Migration from Old Logging
-
-### Before (Old System)
-```python
-import logging
-logger = logging.getLogger(__name__)
-logger.info("Message")
-logger.warning("Warning")
-logger.error("Error")
-```
-
-### After (New System)
-```python
-from src.utils.logger import info, warning, error
-info("Message", "module_name")
-warning("Warning", "module_name")
-error("Error", "module_name")
-```
-
-## Best Practices
-
-1. **Use Module Names**: Always specify the module name when logging
-2. **Choose Appropriate Mode**: Use production mode for deployment, debug mode for development
-3. **Enable Detailed Logging Sparingly**: Detailed logging can be very verbose
-4. **Check Module Status**: Verify if module logging is enabled before extensive logging
-5. **Use Summary Printing**: Use `print_summary()` for clean, formatted output
+- Prefer production mode in benchmarks
+- Enable detailed logs only when diagnosing specific components
+- Always tag logs with a module name for filtering
 
 ## Troubleshooting
 
-### No Logs Appearing
-- Check if logging mode is set correctly
-- Verify module logging is enabled
-- Check if console/file output is enabled for current mode
-
-### Too Many Logs
-- Switch to production mode
-- Disable detailed logging
-- Disable specific module logging
-
-### Performance Issues
-- Use silent mode for performance testing
-- Disable file logging if not needed
-- Use minimal format for faster processing
-
-## Example Scripts
-
-Run the example script to see all features in action:
-
-```bash
-python examples/logging_example.py
-```
-
-This will demonstrate:
-- All logging modes
-- Module-specific control
-- Detailed logging
-- Summary printing
-- Logger status 
+- No logs: ensure you called `setup_logger()` after switching mode; confirm module toggles
+- Too noisy: switch to PRODUCTION or disable detailed components
+- File missing: set `enable_file=True` in config and ensure write permissions for `LOG_DIR`

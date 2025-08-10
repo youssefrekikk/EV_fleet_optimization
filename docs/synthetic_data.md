@@ -2,326 +2,145 @@
 
 ## Overview
 
-This project generates realistic synthetic data for Electric Vehicle (EV) fleet optimization research. The synthetic data includes GPS traces, energy consumption patterns, charging behavior, and road network information for the San Francisco Bay Area.
+This subsystem synthesizes realistic EV fleet datasets for the San Francisco Bay Area, including GPS traces, per-segment physics, per-trip summaries, charging sessions, fleet metadata, and weather. It is the ground truth for training the ML consumption model and benchmarking routing/charging optimizers.
 
-**Key Features:**
-- Physics-based energy consumption modeling
-- Real road network integration with intelligent fallbacks
-- Diverse driver profiles and vehicle models
-- Realistic charging behavior simulation
-- Scalable data generation for research and optimization
+- **Physics-driven**: Consumption computed via `AdvancedEVEnergyModel` using aerodynamics, rolling resistance, elevation, HVAC, regen, and temperature effects
+- **Network-realistic**: Routing over OSM-derived graphs with robust fallbacks in `NetworkDatabase`
+- **Behaviorally rich**: Driver profiles, driving styles, personalities, and home/public charging choices
+- **Scalable and reproducible**: Centralized config, caching, and deterministic seeds where applicable
 
-## Why San Francisco Bay Area?
+## System architecture
 
-We chose the Bay Area as our target region for several strategic reasons:
+```mermaid
+flowchart LR
+  subgraph Config
+    EC[config/ev_config.py]
+    PC[config/physics_constants.py]
+  end
 
-1. **EV Adoption Leader**: Highest EV penetration rate in the US (~15% of new car sales)
-2. **Diverse Geography**: Urban (SF), suburban (Peninsula), industrial (East Bay) - perfect for testing different fleet scenarios
-3. **Charging Infrastructure**: Dense network of charging stations with varied operators and pricing
-4. **Complex Routing**: Bridges, hills, and traffic patterns create realistic optimization challenges
-5. **Weather Variation**: Mild climate with seasonal changes affecting battery efficiency
-6. **Data Availability**: Rich OpenStreetMap coverage and public charging station data
-7. **Research Relevance**: Many fleet operators and tech companies testing EV solutions here
+  SEG[synthetic_ev_generator.py]
+  RND[road_network_db.py]
+  AEM[advanced_energy_model.py]
 
-## Structure
+  OSM[(OSM / cache)]
+  DATA[(data/synthetic)]
+
+  EC --> SEG
+  PC --> AEM
+  SEG -->|load/create| RND
+  RND -->|OSM/fallback| OSM
+  SEG -->|per-trip GPS| AEM
+  AEM -->|segment + trip energy| SEG
+  SEG -->|routes, segments, weather, fleet, charging| DATA
+```
+
+## Why Bay Area?
+
+- **High EV adoption**, diverse terrain/urbanicity, rich public data, complex connectivity (bridges, corridors), and realistic weather variability.
+
+## Repository layout
 
 ```
 src/data_generation/
-├── synthetic_ev_generator.py    # Main data generation orchestrator
-├── road_network_db.py          # Road network management and persistence
-└── openchargemap_api.py        # Real charging station data integration
+├── synthetic_ev_generator.py    # Orchestrates generation, charging, exports
+├── road_network_db.py           # Loads/builds/caches bay-area road graph
+└── advanced_energy_model.py     # Physics-based segment energy model
 
 config/
-├── ev_config.py                # Main configuration hub
-├── ev_models.py                # EV specifications and market data
-├── driver_profiles.py          # Driving behavior patterns
-└── physics_constants.py       # Energy consumption physics
+├── ev_config.py                 # Fleet, charging, weather, bounds
+├── ev_models.py                 # Vehicle specs (weight, CdA, battery)
+├── driver_profiles.py           # Profiles, style distributions
+└── physics_constants.py         # Physics + battery params/curves
 
 data/
-├── synthetic/                  # Generated datasets
-└── networks/                   # Cached road networks
+├── synthetic/                   # CSV/Parquet outputs
+└── networks/                    # Cached graphs (*.pkl.gz)
 ```
 
-## Quick Start
+## Quick start
 
-# Set OpenChargeMap API key (optional)
-.env file with  OPENCHARGEMAP_API_KEY="your_api_key_here"
+```
+# Optional: OpenChargeMap key in .env (if using real stations)
+OPENCHARGEMAP_API_KEY="..."
 
-# Generate synthetic data
+# Generate datasets
 python src/data_generation/synthetic_ev_generator.py
 
-# Output files will be in data/synthetic/
+# Output: data/synthetic/*.csv (+ optional parquet)
 ```
 
-## Core Components
+## Core components
 
-### 1. `synthetic_ev_generator.py` - The Data Generation Engine
+- **`SyntheticEVGenerator`**: builds fleet, generates daily trips, samples destinations, constructs GPS traces with timing/elevation, calls `AdvancedEVEnergyModel`, simulates charging, exports datasets. See `docs/synthetic_ev_generator.md`.
+- **`NetworkDatabase`**: loads/creates a bay-area `networkx.MultiDiGraph`; uses OSMnx when available, with merging, filtering, and synthetic bridges; caches and builds a KDTree for fast nearest-node queries. See `docs/road_network_db.md`.
+- **`AdvancedEVEnergyModel`**: physics-based energy per segment with temp-dependent battery parameters and drivetrain losses; returns per-trip totals and optional per-segment breakdown. See `docs/advanced_energy_model.md`.
 
-**Purpose**: Orchestrates the entire synthetic data generation process for EV fleet optimization.
+## Data contracts (CSV)
 
-**Key Responsibilities**:
-- **Fleet Management**: Generates diverse EV fleet with realistic vehicle models, driver profiles, and charging access
-- **Route Generation**: Creates realistic daily driving patterns using real road networks
-- **Energy Modeling**: Calculates physics-based energy consumption including temperature effects, terrain, and driving style
-- **Charging Simulation**: Models both home and public charging behavior with realistic pricing and availability
-- **Data Export**: Produces clean datasets in multiple formats (CSV, Parquet) for optimization algorithms
+- **routes.csv** per trip
+  - Required: `vehicle_id,trip_id,date,origin_lat,origin_lon,destination_lat,destination_lon,total_distance_km,total_consumption_kwh,efficiency_kwh_per_100km`
+  - Context: `temperature_celsius,weather_is_raining,driver_profile,vehicle_model`
 
-**Key Features**:
-```python
-# Generate complete fleet dataset
-generator = SyntheticEVGenerator()
-datasets = generator.generate_complete_dataset(num_days=30)
+- **segments.csv** per route segment (if enabled)
+  - `vehicle_id,trip_id,segment_id,start_time,end_time,start_lat,start_lon,end_lat,end_lon,start_speed_kmh,end_speed_kmh,start_elevation_m,end_elevation_m`
+  - `distance_m,energy_kwh`
+  - Energy breakdown columns: `energy_rolling_resistance_kwh,energy_aerodynamic_drag_kwh,energy_elevation_change_kwh,energy_acceleration_kwh,energy_regenerative_braking_kwh,energy_hvac_kwh,energy_auxiliary_kwh,energy_battery_thermal_loss_kwh`
+  - Weather snapshot: `weather_temp_c,weather_wind_kmh,weather_is_raining,weather_humidity,season`
+  - Feature provenance: all fields are pre-segment or external context; no realized post-segment leakage
 
-# Includes:
-# - routes: GPS traces with energy consumption
-# - charging_sessions: Home and public charging events  
-# - vehicle_states: Daily summaries per vehicle
-# - weather: Environmental conditions affecting efficiency
-# - fleet_info: Vehicle specifications and driver profiles
-```
+- **charging_sessions.csv**
+  - `vehicle_id,session_id,charging_type,start_time,end_time,energy_delivered_kwh,cost_usd,start_soc,end_soc,charging_power_kw,station_operator,connector_type,is_emergency_charging`
 
-**Why This Approach**:
-- **Realistic Patterns**: Uses real road networks and physics-based models instead of random data
-- **Scalable**: Can generate thousands of vehicles and trips efficiently
-- **Configurable**: Easy to adjust fleet size, simulation period, and behavior parameters
-- **Research-Ready**: Outputs structured data perfect for machine learning and optimization algorithms
+- **vehicle_states.csv** daily per vehicle
+  - `vehicle_id,date,total_distance_km,total_consumption_kwh,num_trips,num_charging_sessions,driver_profile,vehicle_model,efficiency_kwh_per_100km`
 
-### 2. `road_network_db.py` - Smart Network Management
+- **weather.csv** daily
+  - `date,temperature,is_raining,wind_speed_kmh,humidity,season`
 
-**Purpose**: Handles road network data with intelligent caching and fallback strategies.
+- **fleet_info.csv** static per vehicle
+  - `vehicle_id,model,battery_capacity,efficiency,max_charging_speed,driver_profile,driving_style,driver_personality,home_location_lat,home_location_lon,current_battery_soc,has_home_charging`
 
-**The Problem We Solved**:
-- OpenStreetMap (OSM) data is unreliable - sometimes fails to load
-- Bay Area is geographically complex (bridges, disconnected regions)
-- Large networks are slow to process repeatedly
-- Need realistic routing for optimization algorithms
+## Generation lifecycle
 
-**Our Solution**:
-```python
-class NetworkDatabase:
-    def load_or_create_rich_network(self):
-        # 1. Try loading cached network (fast)
-        # 2. Try San Francisco OSM data (most reliable)
-        # 3. Extend SF with Bay Area connections (bridges/highways)
-        # 4. Fallback to simple mock network (always works)
-```
+1) Fleet creation: sample model, battery, profile, style, home-charging, home location within bounds
+2) Per-day: choose start hour, schedule variability, and number of trips per profile
+3) For each trip:
+   - Sample destination (home bias, corridors, long-trip triggers)
+   - Route via `NetworkDatabase` or fallback straight-line with detour factor
+   - Build GPS trace with speeds, elevations, and timestamps
+   - Compute segment and trip energy via `AdvancedEVEnergyModel`
+   - Decide and simulate charging sessions (home/public, thresholds, power, pricing)
+4) Export CSV/Parquet with minimal NaNs and stable schemas
 
-**Network Enhancement Strategy**:
-1. **Load San Francisco**: Most reliable OSM query (10,000+ real road nodes)
-2. **Add Bay Area Cities**: Synthetic nodes for Oakland, San Jose, Palo Alto, etc.
-3. **Connect with Highways**: Realistic highway connections (Bay Bridge, 101, 880)
-4. **Validate Connectivity**: Ensure routes possible between all major cities
+Parameter highlights and defaults:
+- Fleet size/days/region from `FLEET_CONFIG`; depot and geographic bounds tuned to avoid ocean nodes
+- Charging: home availability, L2/L3 power, peak hours and pricing multiplier, base kWh price
+- Weather: base temp, seasonal amplitude, rain probability, wind/humidity typicals
+- Routing: detour factors for fallback, speed maps per highway type, synthetic bridges thresholds (5–30 km)
 
-**Why This Architecture**:
-- **Reliability**: Always produces a working network
-- **Performance**: Caches networks to avoid repeated OSM calls
-- **Realism**: Uses real SF roads extended with realistic Bay Area connections
-- **Flexibility**: Easy to rebuild or clear cache when needed
+## Fallbacks and safeguards
 
-### 3. `config/ev_config.py` - Centralized Configuration
+- Network: bbox → merged cities → state filter → comprehensive mock + synthetic bridges
+- Energy: short-segment simplification, min/max efficiency clamps, non-zero floors
+- Routing failures: direct-route fallback with physics validation
 
-**Purpose**: Single source of truth for all simulation parameters.
+Data quality guards:
+- Numeric coercions and dtype normalization before export
+- Minimal nulls; defaults for missing speeds/elevations/timestamps
+- Efficient per-component logging for diagnosing anomalies (see logging doc)
 
-**Configuration Categories**:
+## Configuration highlights
 
-```python
-# Fleet composition and operation
-FLEET_CONFIG = {
-    'fleet_size': 50,           # Number of vehicles
-    'simulation_days': 30,      # Data generation period
-    'region': 'bay_area',       # Geographic focus
-    'operating_hours': (6, 22)  # Active hours
-}
+- Fleet size/days/region, operating hours
+- Charging enable/home availability/power, peak hours, base price
+- Weather base temp, seasonal amplitude, rain probability, wind/humidity
+- Geographic bounds tuned to avoid ocean/voids
 
-# Charging infrastructure
-CHARGING_CONFIG = {
-    'enable_home_charging': True,
-    'home_charging_availability': 0.8,  # 80% have home charging
-    'home_charging_power': 7.4,         # kW (Level 2)
-    'peak_hours': [(17, 21)],           # Peak pricing periods
-    'base_electricity_cost': 0.15       # USD per kWh
-}
+See `config/ev_config.py` for authoritative values.
 
-# Environmental conditions
-WEATHER_CONFIG = {
-    'base_temperature': 20,      # Celsius
-    'seasonal_amplitude': 8,     # Temperature variation
-    'rain_probability': 0.15     # 15% chance of rain
-}
-```
+## Related documentation
 
-**Why Centralized Configuration**:
-- **Consistency**: All components use same parameters
-- **Experimentation**: Easy to test different scenarios
-- **Documentation**: Clear understanding of all assumptions
-- **Reproducibility**: Consistent results across runs
-
-## Data Generation Process
-
-### Step 1: Fleet Initialization
-```python
-# Generate diverse fleet
-vehicles = generator.generate_fleet_vehicles()
-
-# Each vehicle has:
-# - Model (Tesla Model 3, Nissan Leaf, etc.)
-# - Driver profile (commuter, rideshare, delivery, casual)
-# - Driving style (eco-friendly, normal, aggressive)
-# - Home charging access (80% have access)
-# - Home location (realistic Bay Area distribution)
-```
-
-### Step 2: Daily Route Generation
-```python
-# For each vehicle, each day:
-routes = generator.generate_daily_routes(vehicle, date)
-
-# Routes include:
-# - Origin/destination coordinates
-# - GPS trace with timestamps
-# - Speed and elevation profiles
-# - Physics-based energy consumption
-# - Weather impact on efficiency
-```
-
-### Step 3: Charging Behavior Simulation
-```python
-# Realistic charging decisions:
-charging_sessions = generator.generate_charging_sessions(vehicle, routes, date)
-
-# Considers:
-# - Battery state of charge
-# - Charging threshold by driving style
-# - Home vs public charging preferences
-# - Peak hour pricing
-# - Station availability and selection
-```
-
-### Step 4: Energy Consumption Modeling
-```python
-# Physics-based calculation:
-consumption = generator._calculate_energy_consumption(gps_trace, vehicle, date)
-
-# Includes:
-# - Rolling resistance
-# - Aerodynamic drag  
-# - Elevation changes
-# - Acceleration/deceleration
-# - HVAC usage (temperature dependent)
-# - Regenerative braking recovery
-```
-
-## Vehicle Models and Driver Profiles
-
-### EV Models (from `config/ev_models.py`)
-- **Tesla Model 3**: 75 kWh, 491 km range, 250 kW charging
-- **Tesla Model Y**: 75 kWh, 455 km range, 250 kW charging  
-- **Nissan Leaf**: 62 kWh, 385 km range, 100 kW charging
-- **Chevy Bolt**: 65 kWh, 417 km range, 55 kW charging
-- **Ford Mustang Mach-E**: 88 kWh, 502 km range, 150 kW charging
-- **Hyundai Ioniq 5**: 77.4 kWh, 481 km range, 235 kW charging
-
-### Driver Profiles (from `config/driver_profiles.py`)
-
-**Commuter (40% of fleet)**:
-- Daily distance: 65-130 km
-- 2-4 trips per day
-- High home charging probability (90%)
-- Peak hours: 7-9 AM, 5-7 PM
-
-**Rideshare (25% of fleet)**:
-- Daily distance: 240-480 km
-- 15-25 trips per day
-- Lower home charging access (60%)
-- Extended operating hours
-
-**Delivery (20% of fleet)**:
-- Daily distance: 160-320 km
-- 20-40 trips per day
-- Limited home charging (30%)
-- Business hours operation
-
-**Casual (15% of fleet)**:
-- Daily distance: 30-100 km
-- 1-3 trips per day
-- High home charging access (95%)
-- Off-peak driving patterns
-
-## Output Data Structure
-
-### Routes Dataset
-```csv
-vehicle_id,trip_id,date,origin_lat,origin_lon,destination_lat,destination_lon,
-total_distance_km,total_consumption_kwh,efficiency_kwh_per_100km,
-temperature_celsius,weather_is_raining,driver_profile,vehicle_model
-```
-
-### Charging Sessions Dataset  
-```csv
-vehicle_id,session_id,charging_type,start_time,end_time,
-energy_delivered_kwh,cost_usd,start_soc,end_soc,charging_power_kw,
-station_operator,connector_type,is_emergency_charging
-```
-
-### Vehicle States Dataset
-```csv
-vehicle_id,date,total_distance_km,total_consumption_kwh,
-num_trips,num_charging_sessions,driver_profile,vehicle_model,
-efficiency_kwh_per_100km
-```
-
-### Weather Dataset
-```csv
-date,temperature,is_raining,wind_speed_kmh,humidity,season
-```
-
-### Fleet Info Dataset
-```csv
-vehicle_id,model,battery_capacity,efficiency,max_charging_speed,
-driver_profile,home_location_lat,home_location_lon,current_battery_soc
-```
-
-## Configuration for Different Scenarios
-
-### Urban Delivery Fleet
-```python
-config_delivery = {
-    'fleet': {'fleet_size': 100},
-    'driver_profiles': {'delivery': 0.8, 'commuter': 0.2},
-    'charging': {'home_charging_availability': 0.3}
-}
-```
-
-### Rideshare Fleet
-```python
-config_rideshare = {
-    'fleet': {'fleet_size': 200},
-    'driver_profiles': {'rideshare': 0.9, 'casual': 0.1},
-    'charging': {'home_charging_availability': 0.3}
-}
-```
-
-### Corporate Commuter Fleet
-```python
-config_corporate = {
-    'fleet': {'fleet_size': 50},
-    'driver_profiles': {'commuter': 1.0},
-    'charging': {'home_charging_availability': 0.95}
-}
-```
-
-## Usage for Fleet Optimization
-
-This synthetic data is designed for:
-
-1. **Route Optimization**: Realistic travel times and distances
-2. **Charging Optimization**: When/where to charge decisions
-3. **Fleet Sizing**: How many vehicles needed for demand patterns
-4. **Infrastructure Planning**: Optimal charging station placement
-5. **Energy Management**: Predicting consumption and grid impact
-
-
-
-
-
+- `docs/synthetic_ev_generator.md`
+- `docs/road_network_db.md`
+- `docs/advanced_energy_model.md`
 

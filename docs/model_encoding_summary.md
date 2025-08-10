@@ -1,105 +1,37 @@
-# EV Consumption Model - Encoding Strategy Summary
+# EV Consumption Model – Encoding Strategy
 
-## 🎯 **Changes Made**
+This summarizes how `SegmentEnergyPredictor` encodes inputs for segment-level energy prediction and how encoders persist for inference.
 
-### **1. Time Features Reduction**
-**Before:** 5 time features
-- `hour`, `day_of_week`, `month`, `is_weekend`, `is_rush_hour`
+## Categorical encodings
 
-**After:** 2 time features  
-- `hour` (0-23) - Most predictive for consumption patterns
-- `is_weekend` (0/1) - Captures weekday vs weekend differences
+- Driving style: ordinal
+  - eco_friendly → 0; normal → 1; aggressive → 2
+- Vehicle/driver/season: label encoding
+  - Columns: `model`, `driver_profile`, `driver_personality`, `season`
+  - Mappings are fitted during training and saved in the model bundle
 
-**Removed:** `day_of_week`, `month`, `is_rush_hour` (redundant or less important)
+## Temporal features
 
-### **2. Categorical Encoding Strategy**
+- `hour` derived from `start_time`
+- `weekday`/`is_weekend` derivable but currently dropped in feature selection
 
-#### **Ordinal Encoding for `driving_style`**
-Preserves the natural consumption order:
-```python
-driving_style_map = {
-    'eco_friendly': 0,    # Lowest consumption
-    'normal': 1,          # Medium consumption  
-    'aggressive': 2       # Highest consumption
-}
-```
+## Numeric features
 
-#### **One-Hot Encoding for Other Categoricals**
-No meaningful order, so using dummy variables:
-- `driver_profile` → `driver_profile_commuter`, `driver_profile_delivery`, etc.
-- `model` → `model_tesla_model_3`, `model_nissan_leaf`, etc.
-- `driver_personality` → `driver_personality_optimizer`, etc.
-- `weather_season` → `weather_season_spring`, `weather_season_summer`, etc.
-- `trip_type` → `trip_type_highway`, `trip_type_city`
+- `distance_m`, `log_distance_m`
+- Weather numerics: `weather_temp_c`, `weather_wind_kmh`, `humidity` (if present)
+- Optional derived: `temp_squared = (weather_temp_c - 15)^2`
 
-**Benefits:**
-- Avoids arbitrary numeric assignments
-- Prevents model from assuming false ordinal relationships
-- Better captures categorical feature importance
+## Feature selection and scaling
 
-### **3. Technical Improvements**
+- `prepare_features()` drops datetimes/objects, keeps numeric encodings, persists `feature_columns`
+- Linear models use `StandardScaler`; tree models use raw features
 
-#### **Multicollinearity Prevention**
-- Used `drop_first=True` in `pd.get_dummies()` to avoid dummy variable trap
+## Persistence
 
-#### **Robust Prediction Handling**
-- Handles unseen categories gracefully
-- Defaults unknown driving styles to 'normal' (1)
-- Creates zero vectors for unseen categorical values
+- `save_model()` stores models, scalers, encoders, feature importances, metrics, and `feature_columns`
+- `load_model()` restores the full bundle for routing-time inference
 
-#### **Consistent Feature Engineering**
-- Same encoding applied during training and prediction
-- Stored encoder mappings for reproducibility
+## Benefits
 
-## 🚀 **Expected Benefits**
-
-### **Model Performance**
-- **Better accuracy** for driving style impact (ordinal relationship preserved)
-- **Improved categorical handling** (no false ordinal assumptions)
-- **Reduced feature noise** (fewer time features)
-
-### **Interpretability**
-- **Clear driving style coefficients**: eco < normal < aggressive
-- **Meaningful feature importance** for each category level
-- **Easier to understand** which specific models/profiles drive consumption
-
-### **Robustness**
-- **Handles unseen data** better during prediction
-- **Prevents encoding errors** for new categories
-- **Maintains consistency** across train/test splits
-
-## 📊 **Usage Example**
-
-```python
-# Initialize and train model
-predictor = EVConsumptionPredictor()
-data = predictor.load_data()
-data = predictor.engineer_features(data)
-X, y = predictor.prepare_features(data)
-
-# The encoding will automatically handle:
-# - driving_style: eco_friendly=0, normal=1, aggressive=2
-# - Other categoricals: one-hot encoded dummy variables
-# - Time features: only hour and is_weekend
-
-# Make predictions
-prediction = predictor.predict_trip_consumption(
-    distance_km=50.0,
-    time_minutes=60.0,
-    temperature=20.0,
-    driving_style='aggressive',  # Will be encoded as 2
-    driver_profile='delivery',   # Will create driver_profile_delivery=1
-    hour=8,                      # Peak hour
-    is_weekend=0                 # Weekday
-)
-```
-
-## ✅ **Validation**
-
-The model will now properly:
-1. **Rank driving styles** by consumption: eco_friendly < normal < aggressive
-2. **Handle categorical features** without false ordinal assumptions  
-3. **Focus on key time patterns** without redundant features
-4. **Scale better** with more categories (automatic dummy creation)
-
-This encoding strategy aligns perfectly with the goal of predicting EV energy consumption while preserving meaningful relationships in the data.
+- Preserves ordinal meaning; stable categorical mappings
+- Low leakage risk by excluding realized post-segment fields
