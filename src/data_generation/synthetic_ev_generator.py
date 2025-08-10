@@ -681,12 +681,17 @@ class SyntheticEVGenerator:
         start_hour = int(actual_start_hour)
         start_minute = int((actual_start_hour - start_hour) * 60)
         
-        return date.replace(
+        proposed = date.replace(
             hour=start_hour,
             minute=start_minute,
             second=0,
             microsecond=0
         )
+        # Ensure morning home charging (if scheduled) ends before departure by leaving at least 10 minutes buffer
+        # We don't know morning charge yet here, so clamp earliest start to 6:30 to reduce overlap
+        if proposed.hour < 6 or (proposed.hour == 6 and proposed.minute < 30):
+            proposed = date.replace(hour=6, minute=30, second=0, microsecond=0)
+        return proposed
 
     def _generate_break_duration(self, driver_profile: str, trip_id: int, total_trips: int) -> timedelta:
         """Generate realistic break duration between trips"""
@@ -1492,48 +1497,41 @@ class SyntheticEVGenerator:
     
 
     def _calculate_energy_consumption(self, gps_trace: List[Dict], 
-                                vehicle: Dict, date: datetime) -> Dict:
-        """Calculate realistic energy consumption using advanced physics model"""
-        
-        # Validate GPS trace
-        if not gps_trace or len(gps_trace) < 2:
-            warning(f"Invalid GPS trace for {vehicle['vehicle_id']}: {len(gps_trace) if gps_trace else 0} points", "synthetic_ev_generator")
-            # 🔧 FIX: Pass date to get proper weather conditions
-            return self._create_zero_consumption_result(date)
-        
-       
+                                vehicle: Dict, date: datetime, return_segments: bool = False):
+        """Wrapper to call energy model with optional segment export, debug mode, and robust fallback."""
         # Enable debugging for first few vehicles
         if hasattr(self.energy_model, 'debug_mode'):
-            vehicle_num = int(vehicle['vehicle_id'].split('_')[1])
-            self.energy_model.debug_mode = (vehicle_num < 5)
-    
+            try:
+                vehicle_num = int(vehicle['vehicle_id'].split('_')[1])
+                self.energy_model.debug_mode = (vehicle_num < 5)
+            except Exception:
+                self.energy_model.debug_mode = False
 
         # Get weather conditions for the day
         weather = self._get_weather_conditions(date)
-        
-        # Use the advanced energy model
+
+        # Validate GPS trace
+        if not gps_trace or len(gps_trace) < 2:
+            warning(f"Invalid GPS trace for {vehicle['vehicle_id']}: {len(gps_trace) if gps_trace else 0} points", "synthetic_ev_generator")
+            return self._create_zero_consumption_result(date) if not return_segments else (self._create_zero_consumption_result(date), [])
+
         try:
-            consumption_result = self.energy_model.calculate_energy_consumption(
-                gps_trace, vehicle, weather
-            )
-            
-            # Check if consumption calculation failed
-            if (consumption_result['total_consumption_kwh'] == 0 and 
-                consumption_result['total_distance_km'] > 0):
-                
+            if return_segments:
+                result = self.energy_model.calculate_energy_consumption(gps_trace, vehicle, weather, return_segments=True)
+                consumption_result, segment_details = result
+            else:
+                consumption_result = self.energy_model.calculate_energy_consumption(gps_trace, vehicle, weather)
+                segment_details = None
+
+            # Check if consumption calculation failed (zero consumption for nonzero distance)
+            if (consumption_result['total_consumption_kwh'] == 0 and consumption_result['total_distance_km'] > 0):
                 warning(f"Zero consumption detected for {vehicle['vehicle_id']} "
-                       f"with {consumption_result['total_distance_km']:.2f}km distance - using fallback", "synthetic_ev_generator")
-                
-                # Use fallback calculation
+                        f"with {consumption_result['total_distance_km']:.2f}km distance - using fallback", "synthetic_ev_generator")
                 fallback_consumption = self._calculate_fallback_consumption_simple(
                     consumption_result['total_distance_km'], vehicle
                 )
-                
-                # Update the result with fallback values
                 consumption_result['total_consumption_kwh'] = fallback_consumption
                 consumption_result['efficiency_kwh_per_100km'] = (fallback_consumption / consumption_result['total_distance_km']) * 100
-                
-                # Update breakdown with fallback values
                 consumption_result['consumption_breakdown'] = {
                     'rolling_resistance': fallback_consumption * 0.4,
                     'aerodynamic_drag': fallback_consumption * 0.2,
@@ -1544,12 +1542,9 @@ class SyntheticEVGenerator:
                     'regenerative_braking': 0.0,
                     'battery_thermal_loss': 0.0
                 }
-            
-            return consumption_result
-            
+            return (consumption_result, segment_details) if return_segments else consumption_result
         except Exception as e:
             error(f"Energy model failed for {vehicle['vehicle_id']}: {e}", "synthetic_ev_generator")
-            
             # Calculate distance from GPS trace
             total_distance = 0
             for i in range(len(gps_trace) - 1):
@@ -1560,11 +1555,8 @@ class SyntheticEVGenerator:
                     (point2['latitude'], point2['longitude'])
                 ).kilometers
                 total_distance += segment_distance
-            
-            # Use simple fallback calculation
             fallback_consumption = self._calculate_fallback_consumption_simple(total_distance, vehicle)
-            
-            return {
+            fallback_result = {
                 'total_consumption_kwh': fallback_consumption,
                 'total_distance_km': total_distance,
                 'efficiency_kwh_per_100km': (fallback_consumption / total_distance * 100) if total_distance > 0 else 0,
@@ -1582,6 +1574,9 @@ class SyntheticEVGenerator:
                 },
                 'weather_conditions': weather
             }
+            if return_segments:
+                return fallback_result, []
+            return fallback_result
 
     def _calculate_fallback_consumption_simple(self, distance_km: float, vehicle: Dict) -> float:
         """Simple fallback energy consumption calculation"""
@@ -1865,7 +1860,7 @@ class SyntheticEVGenerator:
         
         # Track battery state throughout the day
         current_soc = vehicle['current_battery_soc']
-        battery_capacity = vehicle['battery_capacity']
+        nominal_battery_capacity = vehicle['battery_capacity']
         
         # Use driving style for charging threshold
         charging_threshold = driving_style['charging_threshold']
@@ -1905,9 +1900,10 @@ class SyntheticEVGenerator:
             # Update current time
             current_time = route_end_time
             
-            # Consume energy for this route
+            # Consume energy for this route using temperature-adjusted effective capacity
             consumption_kwh = route['consumption_data']['total_consumption_kwh']
-            energy_consumed_percent = consumption_kwh / battery_capacity
+            effective_capacity_kwh = self._effective_battery_capacity(vehicle, route_end_time.date())
+            energy_consumed_percent = consumption_kwh / max(1e-6, effective_capacity_kwh)
             current_soc -= energy_consumed_percent
             
             # 🔧 FIX: Realistic minimum SOC protection - modern EVs prevent deep discharge
@@ -2003,12 +1999,10 @@ class SyntheticEVGenerator:
                         vehicle, charging_start_time, current_soc
                     )
                 else:
-                    # Public charging - use simplified infrastructure method
-                    travel_to_station_minutes = np.random.randint(10, 45)  # Time to find and reach station
-                    charging_start_time = route_end_time + timedelta(minutes=travel_to_station_minutes)
-                    
+                    # Public charging with explicit detour modeling handled inside helper
+                    charging_start_time = route_end_time
                     charging_session = self._generate_public_charging_session_with_infrastructure(
-                        vehicle, route['destination'], charging_start_time, current_soc, needs_charging,next_destination
+                        vehicle, route['destination'], charging_start_time, current_soc, needs_charging, next_destination
                     )
                 
                 if charging_session:
@@ -2067,8 +2061,29 @@ class SyntheticEVGenerator:
                 vehicle, evening_charging_time, current_soc
             )
             charging_sessions.append(end_day_session)
+            current_soc = end_day_session['end_soc']
         
+        # Persist SOC back to vehicle for next-day continuity
+        vehicle['current_battery_soc'] = float(np.clip(current_soc, 0.0, 1.0))
         return charging_sessions
+
+    def _effective_battery_capacity(self, vehicle: Dict, on_date: datetime) -> float:
+        """Compute temperature-adjusted effective battery capacity (kWh) for the given date."""
+        try:
+            from config.physics_constants import PHYSICS_CONSTANTS
+        except Exception:
+            PHYSICS_CONSTANTS = {
+                'reference_temp_k': 293.15,
+                'temp_capacity_alpha': 0.05,
+            }
+        # Use the same weather generator to approximate ambient temperature on that date
+        weather = self._get_weather_conditions(on_date)
+        temp_c = weather.get('temperature', 20.0)
+        temp_k = temp_c + 273.15
+        ref_k = PHYSICS_CONSTANTS.get('reference_temp_k', 293.15)
+        alpha = PHYSICS_CONSTANTS.get('temp_capacity_alpha', 0.05)
+        capacity_factor = (temp_k / ref_k) ** alpha
+        return vehicle.get('battery_capacity', 60.0) * capacity_factor
 
 
 
@@ -2101,7 +2116,7 @@ class SyntheticEVGenerator:
         else:
             power_factor = 0.5   # Significant reduction at high SOC
         
-        effective_power = charging_power * power_factor
+        effective_power = max(0.1, charging_power * power_factor)
         charging_time_hours = energy_needed / effective_power
         
         # Add some randomness for real-world variations
@@ -2115,6 +2130,7 @@ class SyntheticEVGenerator:
         """Generate home charging session - REALISTIC human behavior"""
         
         charging_power = self.config['charging']['home_charging_power']  # 7.4 kW
+        # Use temperature-adjusted effective capacity when available via energy model to reflect cold/heat effects
         battery_capacity = vehicle['battery_capacity']
         personality = DRIVER_PERSONALITIES[vehicle['driver_personality']]
         
@@ -2264,16 +2280,32 @@ class SyntheticEVGenerator:
                 # More time available - longer sessions
                 target_soc = base_target * np.random.uniform(0.6, 0.9)
             
-            # Cost sensitivity affects behavior
-            cost_per_kwh = selected_station.get('cost_usd_per_kwh', 0.35)
+            # Cost sensitivity affects behavior (unify cost key)
+            cost_per_kwh = selected_station.get('estimated_cost_per_kwh', selected_station.get('cost_usd_per_kwh', 0.35))
             if cost_per_kwh > 0.40:  # Expensive station
                 target_soc *= np.random.uniform(0.7, 0.9)  # Charge less due to cost
         
         # Ensure reasonable bounds
         target_soc = max(start_soc + 0.05, min(0.95, target_soc))
-        
-        battery_capacity = vehicle['battery_capacity']
-        energy_needed = max(0, (target_soc - start_soc) * battery_capacity)
+
+        # Pre-detour leg: from current location to station
+        station_coords = (selected_station.get('latitude', 0.0), selected_station.get('longitude', 0.0))
+        try:
+            to_station = self._generate_fallback_route_with_timing(
+                location, station_coords, vehicle, start_time, trip_id=9999
+            )
+            to_energy_kwh = to_station['consumption_data']['total_consumption_kwh']
+            to_time_min = to_station['total_time_minutes']
+            eff_cap_kwh = self._effective_battery_capacity(vehicle, start_time.date())
+            start_soc = max(0.12, start_soc - to_energy_kwh / max(1e-6, eff_cap_kwh))
+            start_time = start_time + timedelta(minutes=to_time_min)
+        except Exception:
+            # If detour fails, keep start_soc/start_time unchanged
+            pass
+
+        # Energy to charge based on updated start_soc and EFFECTIVE capacity
+        eff_cap_kwh = self._effective_battery_capacity(vehicle, start_time.date())
+        energy_needed = max(0, (target_soc - start_soc) * eff_cap_kwh)
         # Determine charging power based on station and vehicle capabilities
         station_max_power = selected_station.get('max_power_kw', 22)  # Default 22kW
         vehicle_max_power = vehicle.get('max_charging_speed', 50)     # Vehicle limit
@@ -2290,8 +2322,8 @@ class SyntheticEVGenerator:
             energy_needed, charging_power, start_soc, target_soc
         )
         
-        # Calculate cost with proper peak/off-peak pricing
-        station_base_cost = selected_station.get('estimated_cost_per_kwh', 0.30)
+        # Calculate cost with proper peak/off-peak pricing (unified)
+        station_base_cost = selected_station.get('estimated_cost_per_kwh', selected_station.get('cost_usd_per_kwh', 0.30))
         
         # Peak hour pricing logic
         peak_hours = self.config['charging']['peak_hours']
@@ -2323,7 +2355,9 @@ class SyntheticEVGenerator:
             'cost_per_kwh': round(cost_per_kwh, 3),
             'is_emergency_charging': is_emergency,
             'connector_type': selected_station.get('connector_types', ['Unknown'])[0] if selected_station.get('connector_types') else 'Unknown',
-            'distance_to_station_km': selected_station.get('distance_km', 0)
+            'distance_to_station_km': selected_station.get('distance_km', 0),
+            'station_lat': float(selected_station.get('latitude', 0.0)),
+            'station_lon': float(selected_station.get('longitude', 0.0))
         }
         
         return charging_session
@@ -2505,7 +2539,7 @@ class SyntheticEVGenerator:
         
         # Generate data for each day
         start_date = datetime.strptime(self.config['fleet']['start_date'], '%Y-%m-%d')
-        
+        all_segments = []
         for day in range(num_days):
             current_date = start_date + timedelta(days=day)
             info(f"📅 Generating data for day {day + 1}/{num_days}: {current_date.strftime('%Y-%m-%d')}", "synthetic_ev_generator")
@@ -2568,6 +2602,19 @@ class SyntheticEVGenerator:
                     }
                     all_vehicle_states.append(vehicle_state)
                     
+                    # Collect segment data for each route
+                    
+                    for route in valid_routes:
+                        gps_trace = route['gps_trace']
+                        # Recompute energy with segments (safe, as it's fast and deterministic)
+                        consumption_data, segment_details = self._calculate_energy_consumption(gps_trace, vehicle, current_date, return_segments=True)
+                        for seg in segment_details:
+                            seg['trip_id'] = route['trip_id']
+                            seg['vehicle_id'] = vehicle['vehicle_id']
+                            seg['date'] = route['date']
+                            #print(f"Segment date: {seg['date']} (route date: {route['date']})")
+                        all_segments.extend(segment_details)
+                    
                 except Exception as e:
                     error(f"Error generating data for vehicle {vehicle['vehicle_id']} on {current_date}: {e}", "synthetic_ev_generator")
                     continue
@@ -2593,6 +2640,8 @@ class SyntheticEVGenerator:
             datasets.update(infrastructure_datasets)
         except Exception as e:
             warning(f"Could not create infrastructure datasets: {e}", "synthetic_ev_generator")
+        
+        datasets['segments'] = self._create_segments_dataframe(all_segments)
         
         info("✅ Dataset generation complete!", "synthetic_ev_generator")
         self._print_dataset_summary(datasets)
@@ -2844,6 +2893,207 @@ class SyntheticEVGenerator:
         
         return df_clean
 
+    def _create_segments_dataframe(self, all_segments: list) -> pd.DataFrame:
+        """Create DataFrame for segment-level data"""
+        import pandas as pd
+        return pd.DataFrame(all_segments)
+
+
+
+
+
+
+    def _create_infrastructure_datasets_simple(self) -> Dict[str, pd.DataFrame]:
+        """Create simplified infrastructure datasets"""
+        
+        infrastructure_datasets = {}
+        
+        try:
+            # Combined infrastructure
+            combined_stations = self.infrastructure_manager.get_combined_infrastructure()
+            if len(combined_stations) > 0:
+                infrastructure_datasets['charging_infrastructure'] = combined_stations
+            
+            info(f"Created {len(infrastructure_datasets)} infrastructure datasets", "synthetic_ev_generator")
+            
+        except Exception as e:
+            error(f"Error creating infrastructure datasets: {e}", "synthetic_ev_generator")
+        
+        return infrastructure_datasets
+
+
+
+
+
+
+    def _create_routes_dataframe(self, all_routes: List[Dict]) -> pd.DataFrame:
+        """Create routes DataFrame with flattened GPS and consumption data"""
+        
+        flattened_routes = []
+        
+        for route in all_routes:
+            base_route = {
+                'vehicle_id': route['vehicle_id'],
+                'trip_id': route['trip_id'],
+                'date': route['date'],
+                'origin_lat': route['origin'][0],
+                'origin_lon': route['origin'][1],
+                'destination_lat': route['destination'][0],
+                'destination_lon': route['destination'][1],
+                'total_distance_km': route['total_distance_km'],
+                'total_time_minutes': route['total_time_minutes'],
+                'driver_profile': route['driver_profile']
+            }
+            
+            # Add consumption data
+            consumption = route['consumption_data']
+            base_route.update({
+                'total_consumption_kwh': consumption['total_consumption_kwh'],
+                'efficiency_kwh_per_100km': consumption['efficiency_kwh_per_100km'],
+                'temperature_celsius': consumption['temperature_celsius'],
+                'temperature_efficiency_factor': consumption['temperature_efficiency_factor']
+            })
+            
+            # Add consumption breakdown
+            breakdown = consumption['consumption_breakdown']
+            for component, value in breakdown.items():
+                base_route[f'consumption_{component}_kwh'] = value
+            
+            # Add weather conditions
+            weather = consumption['weather_conditions']
+            base_route.update({
+                'weather_is_raining': weather['is_raining'],
+                'weather_wind_speed_kmh': weather['wind_speed_kmh'],
+                'weather_humidity': weather['humidity'],
+                'weather_season': weather['season']
+            })
+            
+            flattened_routes.append(base_route)
+        
+        return pd.DataFrame(flattened_routes)
+    
+    def _print_dataset_summary(self, datasets: Dict[str, pd.DataFrame]):
+        """Print summary of generated datasets"""
+        
+        print("\n" + "="*50)
+        print("SYNTHETIC EV FLEET DATASET SUMMARY")
+        print("="*50)
+        
+        for name, df in datasets.items():
+            print(f"\n{name.upper()}:")
+            print(f"  Rows: {len(df):,}")
+            print(f"  Columns: {len(df.columns)}")
+            
+            if name == 'routes':
+                total_distance = df['total_distance_km'].sum()
+                total_consumption = df['total_consumption_kwh'].sum()
+                avg_efficiency = df['efficiency_kwh_per_100km'].mean()
+                print(f"  Total Distance: {total_distance:,.1f} km")
+                print(f"  Total Consumption: {total_consumption:,.1f} kWh")
+                print(f"  Average Efficiency: {avg_efficiency:.2f} kWh/100km")
+            
+            elif name == 'charging_sessions':
+                if len(df) > 0 and 'energy_delivered_kwh' in df.columns:
+                    total_energy = df['energy_delivered_kwh'].sum()
+                    total_cost = df['cost_usd'].sum()
+                    avg_session_time = df['duration_hours'].mean()
+                    print(f"  Total Energy Delivered: {total_energy:,.1f} kWh")
+                    print(f"  Total Charging Cost: ${total_cost:,.2f}")
+                    print(f"  Average Session Duration: {avg_session_time:.1f} hours")
+                else:
+                    print("  No charging sessions generated")
+            
+            elif name == 'vehicle_states':
+                unique_vehicles = df['vehicle_id'].nunique()
+                unique_days = df['date'].nunique()
+                print(f"  Unique Vehicles: {unique_vehicles}")
+                print(f"  Days of Data: {unique_days}")
+        
+        print("\n" + "="*50)
+    
+    def save_datasets(self, datasets: Dict[str, pd.DataFrame], 
+                 output_dir: str = None) -> Dict[str, str]:
+        """Save datasets to files"""
+        
+        if output_dir is None:
+            output_dir = self.config['data_gen']['output_directory']
+        
+        os.makedirs(output_dir, exist_ok=True)
+        
+        saved_files = {}
+        file_formats = self.config['data_gen']['file_formats']
+        use_compression = self.config['data_gen']['compression']
+        
+        for name, df in datasets.items():
+            # Clean DataFrame before saving
+            df_clean = self._clean_dataframe_for_export(df)
+            
+            for file_format in file_formats:
+                if file_format == 'csv':
+                    filename = f"{name}.csv"
+                    filepath = os.path.join(output_dir, filename)
+                    df_clean.to_csv(filepath, index=False, compression='gzip' if use_compression else None)
+                
+                elif file_format == 'parquet':
+                    filename = f"{name}.parquet"
+                    filepath = os.path.join(output_dir, filename)
+                    df_clean.to_parquet(filepath, compression='snappy' if use_compression else None)
+                
+                saved_files[f"{name}_{file_format}"] = filepath
+                info(f"Saved {name} dataset to {filepath}", "synthetic_ev_generator")
+        
+        # Save metadata
+        metadata = {
+            'generation_date': datetime.now().isoformat(),
+            'config': self.config,
+            'dataset_summary': {
+                name: {
+                    'rows': len(df),
+                    'columns': len(df.columns),
+                    'memory_usage_mb': df.memory_usage(deep=True).sum() / 1024 / 1024
+                }
+                for name, df in datasets.items()
+            }
+        }
+        
+        metadata_file = os.path.join(output_dir, 'metadata.json')
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2, default=str)
+        
+        saved_files['metadata'] = metadata_file
+        
+        return saved_files
+
+    def _clean_dataframe_for_export(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Clean DataFrame to avoid export issues"""
+        df_clean = df.copy()
+        
+        # Convert all object columns that might have mixed types to string
+        for col in df_clean.columns:
+            if df_clean[col].dtype == 'object':
+                # Check if column has mixed types or contains lists/dicts
+                sample_values = df_clean[col].dropna().head(10)
+                
+                if len(sample_values) > 0:
+                    # Check for mixed types or complex objects
+                    first_type = type(sample_values.iloc[0])
+                    has_mixed_types = any(type(val) != first_type for val in sample_values)
+                    has_complex_objects = any(isinstance(val, (list, dict)) for val in sample_values)
+                    
+                    if has_mixed_types or has_complex_objects:
+                        # Convert to string representation
+                        df_clean[col] = df_clean[col].astype(str)
+                        debug(f"Converted column '{col}' to string due to mixed/complex types", "synthetic_ev_generator")
+        
+        # Specifically handle known problematic columns
+        problematic_columns = ['station_id', 'connector_types', 'gps_trace']
+        
+        for col in problematic_columns:
+            if col in df_clean.columns:
+                df_clean[col] = df_clean[col].astype(str)
+        
+        return df_clean
+
 
 
 
@@ -2853,8 +3103,8 @@ def main():
     
     # Configuration override for testing
     config_override = {
-        'fleet': {'fleet_size': 20},  # Smaller fleet for testing
-        'simulation': {'simulation_days': 30}  # One week of data
+        'fleet': {'fleet_size': 15},  # Smaller fleet for testing
+        'simulation': {'simulation_days': 21}  # One week of data
     }
     
     # Initialize generator
@@ -2868,7 +3118,7 @@ def main():
     print(f"\n📊 Network Status: {network_info}")
 
     # Generate complete dataset
-    datasets = generator.generate_complete_dataset(num_days=30)
+    datasets = generator.generate_complete_dataset(num_days=21)
     
     # Save datasets
     saved_files = generator.save_datasets(datasets)

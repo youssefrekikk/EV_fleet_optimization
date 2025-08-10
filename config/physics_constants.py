@@ -8,7 +8,7 @@ PHYSICS_CONSTANTS = {
     'battery_efficiency': 0.95,         # 95% battery efficiency
     'hvac_base_power': 2,            # kW base HVAC consumption
     'auxiliary_power': 0.25,            # kW for lights, electronics, etc.
-    
+    'auxiliary_usage_factor': 0.5,      # 50% usage factor for auxiliary systems
     # New advanced physics constants
     'gas_constant': 8.314,             # J/(mol·K) - universal gas constant
     'activation_energy': 20000,        # J/mol - typical for Li-ion batteries
