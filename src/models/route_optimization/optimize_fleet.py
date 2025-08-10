@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -10,11 +10,12 @@ import pandas as pd
 import networkx as nx
 import sys
 import os
+import argparse
 # Ensure project root is on sys.path so 'config' and 'src' are importable
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
-from config.ev_config import FLEET_CONFIG
+from config.ev_config import FLEET_CONFIG, CHARGING_CONFIG
 from config.optimization_config import OPTIMIZATION_CONFIG
 from src.data_generation.road_network_db import NetworkDatabase
 from src.models.route_optimization.optimization import (
@@ -23,6 +24,7 @@ from src.models.route_optimization.optimization import (
 )
 from src.data_generation.advanced_energy_model import AdvancedEVEnergyModel
 from src.utils.logger import info, warning, debug, error, print_summary
+from tqdm import tqdm
 
 
 def load_contexts_for_day(date: datetime, fleet_info: pd.DataFrame, weather: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
@@ -74,6 +76,7 @@ def route_and_evaluate(
     weather: Dict[str, Any],
     depart_time: datetime,
     algorithm: str,
+    validate_physics: bool = True,
 ) -> Dict[str, Any]:
     # Try configured algorithm; on failure try the other one once before bubbling up
     try:
@@ -97,7 +100,9 @@ def route_and_evaluate(
         travel_time_s += float(edata.get('travel_time', 0.0))
         length_m += float(edata.get('length', 0.0))
     # Physics validation
-    physics = router.validate_path_with_physics(G, path, vehicle, weather, depart_time)
+    physics = {'physics_kwh': None, 'distance_km': length_m / 1000.0}
+    if validate_physics:
+        physics = router.validate_path_with_physics(G, path, vehicle, weather, depart_time)
     return {
         'path': path,
         'ml_energy_kwh': energy_kwh,
@@ -180,6 +185,9 @@ def optimize_fleet_day(
     date: datetime,
     algorithm: Optional[str] = None,
     soc_planning: bool = False,
+    validate_physics: bool = True,
+    trip_sample_frac: Optional[float] = None,
+    trip_sample_n: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Re-run routing for all trips on a given date using ML energy-aware routing (and optional SOC planning),
@@ -198,26 +206,79 @@ def optimize_fleet_day(
     algo = (algorithm or OPTIMIZATION_CONFIG.get('route_optimization_algorithm', 'dijkstra')).lower()
 
     results: List[Dict[str, Any]] = []
-    for _, trip in routes_df[routes_df['date'] == date.strftime('%Y-%m-%d')].iterrows():
+    trips_day = routes_df[routes_df['date'] == date.strftime('%Y-%m-%d')]
+    # Optional per-day trip sampling
+    if trip_sample_n is not None and trip_sample_n > 0 and len(trips_day) > trip_sample_n:
+        trips_day = trips_day.sample(n=trip_sample_n, random_state=42)
+    elif trip_sample_frac is not None and 0 < trip_sample_frac < 1:
+        trips_day = trips_day.sample(frac=trip_sample_frac, random_state=42)
+    # cache nearest node lookups to speed up
+    node_cache: Dict[Tuple[float, float], Any] = {}
+    def nearest_cached(lat: float, lon: float) -> Any:
+        key = (round(float(lat), 5), round(float(lon), 5))
+        if key in node_cache:
+            return node_cache[key]
+        node = db._find_nearest_node(float(lat), float(lon))
+        node_cache[key] = node
+        return node
+
+    # Shared ML weight cache across trips on the same day to reuse edge predictions
+    shared_ml_cache: Dict = {}
+    for _, trip in tqdm(trips_day.iterrows(), total=len(trips_day), desc=f"Trips {date.strftime('%Y-%m-%d')}"):
         vehicle_id = trip['vehicle_id']
         ctx = contexts[vehicle_id]
-        origin = db._find_nearest_node(trip['origin_lat'], trip['origin_lon'])
-        dest = db._find_nearest_node(trip['destination_lat'], trip['destination_lon'])
+        origin = nearest_cached(trip['origin_lat'], trip['origin_lon'])
+        dest = nearest_cached(trip['destination_lat'], trip['destination_lon'])
         debug(f"Trip {vehicle_id} {trip['origin_lat']},{trip['origin_lon']} -> {trip['destination_lat']},{trip['destination_lon']} nodes=({origin}->{dest})", "optimize_fleet")
         depart_time = datetime.fromisoformat(trip.get('start_time', f"{date.strftime('%Y-%m-%d')}T08:00:00"))
 
         if not soc_planning:
             try:
-                res = route_and_evaluate(
-                    G, seg_router, origin, dest, ctx['vehicle'], ctx['driver'], ctx['weather'], depart_time, algo
+                # Use shared cache to speed repeated edge evaluations
+                path = seg_router.find_energy_optimal_path(
+                    G, origin, dest, ctx['vehicle'], ctx['driver'], ctx['weather'], depart_time, algorithm=algo, shared_cache=shared_ml_cache
                 )
             except Exception as e:
-                warning(f"Routing failed ({algo}), trying fallback: {e}", "optimize_fleet")
-                res = fallback_evaluate_direct(
-                    trip['origin_lat'], trip['origin_lon'], trip['destination_lat'], trip['destination_lon'],
-                    ctx['vehicle'], ctx['weather'], depart_time
-                )
-            res.update({'vehicle_id': vehicle_id, 'date': date.strftime('%Y-%m-%d')})
+                # Try alternate algorithm before falling back to direct evaluation
+                alt_algo = 'astar' if (algo or '').lower() == 'dijkstra' else 'dijkstra'
+                warning(f"Routing failed ({algo}), trying alternate algorithm {alt_algo}: {e}", "optimize_fleet")
+                try:
+                    path = seg_router.find_energy_optimal_path(
+                        G, origin, dest, ctx['vehicle'], ctx['driver'], ctx['weather'], depart_time, algorithm=alt_algo, shared_cache=shared_ml_cache
+                    )
+                except Exception as e2:
+                    warning(f"Alternate routing failed ({alt_algo}), using fallback: {e2}", "optimize_fleet")
+                    res = fallback_evaluate_direct(
+                        trip['origin_lat'], trip['origin_lon'], trip['destination_lat'], trip['destination_lon'],
+                        ctx['vehicle'], ctx['weather'], depart_time
+                    )
+                    res.update({'vehicle_id': vehicle_id, 'date': date.strftime('%Y-%m-%d'), 'trip_id': trip.get('trip_id')})
+                    results.append(res)
+                    continue
+
+            # Evaluate metrics on this path using the same shared cache
+            w = seg_router.make_weight_function(G, ctx['vehicle'], ctx['driver'], ctx['weather'], depart_time, shared_cache=shared_ml_cache)
+            energy_kwh = 0.0
+            travel_time_s = 0.0
+            length_m = 0.0
+            for u, v in zip(path[:-1], path[1:]):
+                edata = (G.edges[u, v, 0] if G.has_edge(u, v, 0) else list(G[u][v].values())[0]).copy()
+                edata.setdefault('key', 0)
+                energy_kwh += float(w(u, v, edata))
+                travel_time_s += float(edata.get('travel_time', 0.0))
+                length_m += float(edata.get('length', 0.0))
+            physics = {'physics_kwh': None, 'distance_km': length_m / 1000.0}
+            if validate_physics:
+                physics = seg_router.validate_path_with_physics(G, path, ctx['vehicle'], ctx['weather'], depart_time)
+            res = {
+                'path': path,
+                'ml_energy_kwh': energy_kwh,
+                'travel_time_s': travel_time_s,
+                'length_m': length_m,
+                'physics_kwh': physics['physics_kwh'],
+                'distance_km': physics['distance_km'],
+            }
+            res.update({'vehicle_id': vehicle_id, 'date': date.strftime('%Y-%m-%d'), 'trip_id': trip.get('trip_id')})
             results.append(res)
         else:
             # SOC planning version: plan with charging; for comparison, still compute ML energy/time on resulting path
@@ -242,16 +303,35 @@ def optimize_fleet_day(
             path = soc_plan.get('path', [])
             if path:
                 try:
-                    reroute_eval = route_and_evaluate(
-                        G, seg_router, origin, dest, ctx['vehicle'], ctx['driver'], ctx['weather'], depart_time, algo
+                    path2 = seg_router.find_energy_optimal_path(
+                        G, origin, dest, ctx['vehicle'], ctx['driver'], ctx['weather'], depart_time, algorithm=algo, shared_cache=shared_ml_cache
                     )
+                    w2 = seg_router.make_weight_function(G, ctx['vehicle'], ctx['driver'], ctx['weather'], depart_time, shared_cache=shared_ml_cache)
+                    e2 = 0.0; t2 = 0.0; lm2 = 0.0
+                    for u, v in zip(path2[:-1], path2[1:]):
+                        edata = (G.edges[u, v, 0] if G.has_edge(u, v, 0) else list(G[u][v].values())[0]).copy()
+                        edata.setdefault('key', 0)
+                        e2 += float(w2(u, v, edata))
+                        t2 += float(edata.get('travel_time', 0.0))
+                        lm2 += float(edata.get('length', 0.0))
+                    phys2 = {'physics_kwh': None, 'distance_km': lm2 / 1000.0}
+                    if validate_physics:
+                        phys2 = seg_router.validate_path_with_physics(G, path2, ctx['vehicle'], ctx['weather'], depart_time)
+                    reroute_eval = {
+                        'path': path2,
+                        'ml_energy_kwh': e2,
+                        'travel_time_s': t2,
+                        'length_m': lm2,
+                        'physics_kwh': phys2['physics_kwh'],
+                        'distance_km': phys2['distance_km'],
+                    }
                 except Exception as e:
                     warning(f"Routing failed after SOC plan, using fallback: {e}", "optimize_fleet")
                     reroute_eval = fallback_evaluate_direct(
                         trip['origin_lat'], trip['origin_lon'], trip['destination_lat'], trip['destination_lon'],
                         ctx['vehicle'], ctx['weather'], depart_time
                     )
-                reroute_eval.update({'vehicle_id': vehicle_id, 'date': date.strftime('%Y-%m-%d')})
+                reroute_eval.update({'vehicle_id': vehicle_id, 'date': date.strftime('%Y-%m-%d'), 'trip_id': trip.get('trip_id')})
                 reroute_eval['soc_metrics'] = soc_plan.get('metrics', {})
                 results.append(reroute_eval)
 
@@ -266,6 +346,13 @@ def main(
     output_dir: str = "data/analysis/optimized",
     algorithm: Optional[str] = None,
     soc_planning: bool = False,
+    validate_physics: bool = False,
+    trip_sample_frac: Optional[float] = None,
+    trip_sample_n: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    only_dates: Optional[List[str]] = None,
+    max_days: Optional[int] = None,
 ):
     os.makedirs(output_dir, exist_ok=True)
     # Load datasets
@@ -273,23 +360,57 @@ def main(
     fleet = pd.read_csv(Path(data_dir) / 'fleet_info.csv')
     weather = pd.read_csv(Path(data_dir) / 'weather.csv')
 
-    days = sorted(routes['date'].unique())
+    # Determine which days to run
+    all_days = sorted(routes['date'].unique())
+    if only_dates:
+        days = [d for d in all_days if d in set(only_dates)]
+    else:
+        days = all_days
+        if start_date:
+            days = [d for d in days if d >= start_date]
+        if end_date:
+            days = [d for d in days if d <= end_date]
+    # Use config default if CLI not set
+    if (max_days is None) and (OPTIMIZATION_CONFIG.get('fleet_eval_max_days') is not None):
+        try:
+            cfg_max_days = int(OPTIMIZATION_CONFIG.get('fleet_eval_max_days'))
+            if cfg_max_days > 0:
+                max_days = cfg_max_days
+        except Exception:
+            pass
+    if max_days is not None and max_days > 0:
+        days = days[:max_days]
+
     db = NetworkDatabase()
     G = db.load_or_create_network()
 
+    # Determine per-day sampling defaults from config if not set
+    if (trip_sample_frac is None) and (trip_sample_n is None):
+        cfg_frac = OPTIMIZATION_CONFIG.get('fleet_eval_trip_sample_frac')
+        if isinstance(cfg_frac, (float, int)) and 0 < float(cfg_frac) < 1:
+            trip_sample_frac = float(cfg_frac)
+
     daily_results: List[Dict[str, Any]] = []
-    for d in days:
+    for d in tqdm(days, desc="Days"):
         date = datetime.fromisoformat(d)
-        res = optimize_fleet_day(G, routes, fleet, weather, date, algorithm=algorithm, soc_planning=soc_planning)
+        res = optimize_fleet_day(
+            G, routes, fleet, weather, date,
+            algorithm=algorithm,
+            soc_planning=soc_planning,
+            validate_physics=validate_physics,
+            trip_sample_frac=trip_sample_frac,
+            trip_sample_n=trip_sample_n,
+        )
         daily_results.append(res)
 
-    # Aggregate and save
+    # Aggregate and save per-trip optimized results
     all_rows: List[Dict[str, Any]] = []
     for day in daily_results:
         for trip in day['trips']:
             row = {
                 'date': day['date'],
                 'vehicle_id': trip.get('vehicle_id'),
+                'trip_id': trip.get('trip_id'),
                 'ml_energy_kwh': trip.get('ml_energy_kwh'),
                 'physics_kwh': trip.get('physics_kwh'),
                 'travel_time_s': trip.get('travel_time_s'),
@@ -304,28 +425,125 @@ def main(
             })
             all_rows.append(row)
 
-    df_out = pd.DataFrame(all_rows)
-    csv_path = Path(output_dir) / 'fleet_optimization_results.csv'
-    df_out.to_csv(csv_path, index=False)
+    optimized_df = pd.DataFrame(all_rows)
+    results_csv_path = Path(output_dir) / 'fleet_optimization_results.csv'
+    optimized_df.to_csv(results_csv_path, index=False)
 
-    with open(Path(output_dir) / 'fleet_optimization_summary.json', 'w') as f:
+    # KPI comparison against baseline (same trips)
+    # Join on date + vehicle_id + trip_id
+    baseline_cols = [
+        'date', 'vehicle_id', 'trip_id',
+        'total_consumption_kwh', 'total_distance_km', 'total_time_minutes'
+    ]
+    missing_baseline_cols = [c for c in baseline_cols if c not in routes.columns]
+    kpi_summary = {}
+    if not missing_baseline_cols and not optimized_df.empty:
+        baseline_df = routes[baseline_cols].copy()
+        merged = pd.merge(
+            optimized_df,
+            baseline_df,
+            on=['date', 'vehicle_id', 'trip_id'],
+            how='inner'
+        )
+        # Compute metrics
+        merged['baseline_energy_kwh'] = merged['total_consumption_kwh']
+        merged['optimized_energy_kwh'] = merged['ml_energy_kwh']
+        merged['energy_delta_kwh'] = merged['optimized_energy_kwh'] - merged['baseline_energy_kwh']
+        merged['energy_delta_pct'] = merged['energy_delta_kwh'] / merged['baseline_energy_kwh'] * 100.0
+
+        merged['baseline_time_s'] = merged['total_time_minutes'] * 60.0
+        merged['optimized_time_s'] = merged['travel_time_s']
+        merged['time_delta_s'] = merged['optimized_time_s'] - merged['baseline_time_s']
+        merged['time_delta_pct'] = merged['time_delta_s'] / merged['baseline_time_s'] * 100.0
+
+        merged['baseline_distance_m'] = merged['total_distance_km'] * 1000.0
+        merged['optimized_distance_m'] = merged['length_m']
+        merged['distance_delta_m'] = merged['optimized_distance_m'] - merged['baseline_distance_m']
+        merged['distance_delta_pct'] = merged['distance_delta_m'] / merged['baseline_distance_m'] * 100.0
+
+        # Estimated cost using base electricity cost (approximation)
+        base_cost = float(CHARGING_CONFIG.get('base_electricity_cost', 0.15))
+        merged['baseline_cost_est_usd'] = merged['baseline_energy_kwh'] * base_cost
+        merged['optimized_cost_est_usd'] = merged['optimized_energy_kwh'] * base_cost
+        merged['cost_delta_usd'] = merged['optimized_cost_est_usd'] - merged['baseline_cost_est_usd']
+        merged['cost_delta_pct'] = merged['cost_delta_usd'] / merged['baseline_cost_est_usd'] * 100.0
+
+        # Save per-trip KPI table
+        kpi_csv = Path(output_dir) / 'fleet_optimization_kpis.csv'
+        merged.to_csv(kpi_csv, index=False)
+
+        # Build summary (ignore NaNs)
+        def _mean(series: pd.Series) -> Optional[float]:
+            try:
+                return float(series.dropna().mean()) if len(series.dropna()) else None
+            except Exception:
+                return None
+
+        kpi_summary = {
+            'total_trips_evaluated': int(len(merged)),
+            'avg_baseline_energy_kwh': _mean(merged['baseline_energy_kwh']),
+            'avg_optimized_energy_kwh': _mean(merged['optimized_energy_kwh']),
+            'avg_energy_delta_kwh': _mean(merged['energy_delta_kwh']),
+            'avg_energy_delta_pct': _mean(merged['energy_delta_pct']),
+            'avg_baseline_time_s': _mean(merged['baseline_time_s']),
+            'avg_optimized_time_s': _mean(merged['optimized_time_s']),
+            'avg_time_delta_s': _mean(merged['time_delta_s']),
+            'avg_time_delta_pct': _mean(merged['time_delta_pct']),
+            'avg_baseline_cost_usd_est': _mean(merged['baseline_cost_est_usd']),
+            'avg_optimized_cost_usd_est': _mean(merged['optimized_cost_est_usd']),
+            'avg_cost_delta_usd_est': _mean(merged['cost_delta_usd']),
+            'avg_cost_delta_pct_est': _mean(merged['cost_delta_pct']),
+        }
+
+    # Also keep a compact summary for quick glance
+    summary_json_path = Path(output_dir) / 'fleet_optimization_summary.json'
+    with open(summary_json_path, 'w') as f:
         json.dump({
-            'total_trips': len(all_rows),
-            'avg_ml_energy_kwh': float(df_out['ml_energy_kwh'].mean()) if len(df_out) else None,
-            'avg_physics_kwh': float(df_out['physics_kwh'].mean()) if len(df_out) else None,
-            'avg_travel_time_s': float(df_out['travel_time_s'].mean()) if len(df_out) else None,
+            'total_trips': int(len(optimized_df)),
+            'avg_ml_energy_kwh': float(optimized_df['ml_energy_kwh'].mean()) if len(optimized_df) else None,
+            'avg_physics_kwh': float(optimized_df['physics_kwh'].mean()) if ('physics_kwh' in optimized_df.columns and len(optimized_df)) else None,
+            'avg_travel_time_s': float(optimized_df['travel_time_s'].mean()) if len(optimized_df) else None,
+            'kpis': kpi_summary,
         }, f, indent=2)
 
     print_summary("FLEET OPTIMIZATION SUMMARY", {
-        'trips': len(all_rows),
-        'avg_ml_energy_kwh': float(df_out['ml_energy_kwh'].mean()) if len(df_out) else None,
-        'avg_physics_kwh': float(df_out['physics_kwh'].mean()) if len(df_out) else None,
-        'avg_travel_time_s': float(df_out['travel_time_s'].mean()) if len(df_out) else None,
-        'out_csv': str(csv_path),
+        'trips': int(len(optimized_df)),
+        'avg_ml_energy_kwh': float(optimized_df['ml_energy_kwh'].mean()) if len(optimized_df) else None,
+        'avg_physics_kwh': float(optimized_df['physics_kwh'].mean()) if ('physics_kwh' in optimized_df.columns and len(optimized_df)) else None,
+        'avg_travel_time_s': float(optimized_df['travel_time_s'].mean()) if len(optimized_df) else None,
+        'results_csv': str(results_csv_path),
+        'summary_json': str(summary_json_path),
     })
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Optimize fleet routes with ML energy-aware routing")
+    parser.add_argument('--data-dir', type=str, default="data/synthetic")
+    parser.add_argument('--output-dir', type=str, default="data/analysis/optimized")
+    parser.add_argument('--algorithm', type=str, choices=['astar', 'dijkstra'], default=None)
+    parser.add_argument('--soc-planning', action='store_true', help='Enable SOC-aware routing')
+    parser.add_argument('--no-physics', action='store_true', help='Disable per-trip physics validation')
+    parser.add_argument('--sample-frac', type=float, default=None, help='Sample fraction of trips per day (0-1)')
+    parser.add_argument('--sample-n', type=int, default=None, help='Sample N trips per day')
+    parser.add_argument('--start-date', type=str, default=None, help='Inclusive start date YYYY-MM-DD')
+    parser.add_argument('--end-date', type=str, default=None, help='Inclusive end date YYYY-MM-DD')
+    parser.add_argument('--dates', type=str, nargs='*', default=None, help='Specific dates YYYY-MM-DD to run')
+    parser.add_argument('--max-days', type=int, default=None, help='Limit number of days to run (overrides config)')
+
+    args = parser.parse_args()
+
+    main(
+        data_dir=args.data_dir,
+        output_dir=args.output_dir,
+        algorithm=args.algorithm,
+        soc_planning=args.soc_planning,
+        validate_physics=not args.no_physics,
+        trip_sample_frac=args.sample_frac,
+        trip_sample_n=args.sample_n,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        only_dates=args.dates,
+        max_days=args.max_days,
+    )
 
 
