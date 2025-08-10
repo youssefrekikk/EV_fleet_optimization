@@ -73,6 +73,7 @@ class EnergyWeightFunction:
         driver_context: Dict[str, Any],
         weather_context: Dict[str, Any],
         departure_time: datetime,
+        shared_cache: Optional[Dict[Tuple[Any, Any, int, Tuple], float]] = None,
     ) -> None:
         self.G = graph
         self.predictor = predictor
@@ -80,7 +81,8 @@ class EnergyWeightFunction:
         self.driver = driver_context or {}
         self.weather = weather_context or {}
         self.departure_time = departure_time
-        self.cache: Dict[Tuple[Any, Any, int], float] = {}
+        self.cache: Dict[Tuple[Any, Any, int, Tuple], float] = {}
+        self.shared_cache = shared_cache
 
         # Precompute simple context fields used for caching keys
         self._context_key = (
@@ -96,6 +98,9 @@ class EnergyWeightFunction:
         # MultiDiGraph may have parallel edges distinguished by 'key'. Use 0 by default.
         key = edata.get("key", 0)
         cache_key = (u, v, key, self._context_key)
+        if self.shared_cache is not None:
+            if cache_key in self.shared_cache:
+                return self.shared_cache[cache_key]
         if cache_key in self.cache:
             return self.cache[cache_key]
 
@@ -147,7 +152,10 @@ class EnergyWeightFunction:
             speed_penalty = 1.0 + (40.0 / max(speed_kph, 1.0) - 1.0) * 0.2
             weight = max((distance_m / 1000.0) * base_kwh_per_km * speed_penalty, 1e-9)
 
+        # Save to caches
         self.cache[cache_key] = weight
+        if self.shared_cache is not None:
+            self.shared_cache[cache_key] = weight
         return weight
 
 
@@ -175,6 +183,7 @@ class SegmentEnergyRouter:
         driver_context: Dict[str, Any],
         weather_context: Dict[str, Any],
         departure_time: datetime,
+        shared_cache: Optional[Dict[Tuple[Any, Any, int, Tuple], float]] = None,
     ) -> EnergyWeightFunction:
         return EnergyWeightFunction(
             graph=graph,
@@ -183,6 +192,7 @@ class SegmentEnergyRouter:
             driver_context=driver_context,
             weather_context=weather_context,
             departure_time=departure_time,
+            shared_cache=shared_cache,
         )
 
     @staticmethod
@@ -209,10 +219,11 @@ class SegmentEnergyRouter:
         driver_context: Dict[str, Any],
         weather_context: Dict[str, Any],
         departure_time: datetime,
+        shared_cache: Optional[Dict[Tuple[Any, Any, int, Tuple], float]] = None,
     ) -> List[Any]:
         info(f"Routing (Dijkstra) from {origin} to {destination}", "optimization")
         weight_fn = self.make_weight_function(
-            G, vehicle_context, driver_context, weather_context, departure_time
+            G, vehicle_context, driver_context, weather_context, departure_time, shared_cache=shared_cache
         )
         path = nx.shortest_path(G, origin, destination, weight=weight_fn)
         info(f"Dijkstra path length: {len(path)} nodes", "optimization")
@@ -316,6 +327,7 @@ class SegmentEnergyRouter:
         weather_context: Dict[str, Any],
         departure_time: datetime,
         heuristic_kwh_per_km: Optional[float] = None,
+        shared_cache: Optional[Dict[Tuple[Any, Any, int, Tuple], float]] = None,
     ) -> List[Any]:
         """
         Energy-aware A* with an admissible heuristic: optimistic kWh/km times straight-line distance.
@@ -323,7 +335,7 @@ class SegmentEnergyRouter:
         """
         info(f"Routing (A*) from {origin} to {destination}", "optimization")
         weight_fn = self.make_weight_function(
-            G, vehicle_context, driver_context, weather_context, departure_time
+            G, vehicle_context, driver_context, weather_context, departure_time, shared_cache=shared_cache
         )
 
         def h(u: Any, v: Any) -> float:
@@ -358,12 +370,13 @@ class SegmentEnergyRouter:
         weather_context: Dict[str, Any],
         departure_time: datetime,
         algorithm: Optional[str] = None,
+        shared_cache: Optional[Dict[Tuple[Any, Any, int, Tuple], float]] = None,
     ) -> List[Any]:
         algo = (algorithm or OPTIMIZATION_CONFIG.get("route_optimization_algorithm", "dijkstra")).lower()
         info(f"find_energy_optimal_path using {algo}", "optimization")
         if algo == "astar":
-            return self.a_star_path_by_energy(G, origin, destination, vehicle_context, driver_context, weather_context, departure_time)
-        return self.shortest_path_by_energy(G, origin, destination, vehicle_context, driver_context, weather_context, departure_time)
+            return self.a_star_path_by_energy(G, origin, destination, vehicle_context, driver_context, weather_context, departure_time, shared_cache=shared_cache)
+        return self.shortest_path_by_energy(G, origin, destination, vehicle_context, driver_context, weather_context, departure_time, shared_cache=shared_cache)
 
     def validate_path_with_physics(
         self,
