@@ -13,11 +13,12 @@ from src.models.consumption_prediction.consumption_model_v2 import (
     SegmentEnergyPredictor,
 )
 from pulp import LpProblem, LpVariable, LpMinimize, lpSum, LpStatus, value
-from config.ev_config import EV_MODELS
+from config.ev_config import EV_MODELS, CHARGING_CONFIG
 from config.optimization_config import OPTIMIZATION_CONFIG
 from config.physics_constants import PHYSICS_CONSTANTS
 from src.data_generation.advanced_energy_model import AdvancedEVEnergyModel
 from src.utils.logger import info, warning, debug, error
+from src.utils.tariff import get_price_per_kwh
 
 
 def _season_from_month(month: int) -> str:
@@ -502,9 +503,13 @@ class SOCResourceRouter:
         nominal_battery_capacity_kwh: float,
         initial_soc: float,
         min_soc: float = 0.12,
+        terminal_min_soc: Optional[float] = None,
         soc_step: float = 0.02,
         gamma_time_weight: Optional[float] = None,
         price_weight_kwh_per_usd: float = 0.0,
+        objective: str = "energy",  # 'energy' | 'cost' | 'time' | 'weighted'
+        alpha_usd_per_hour: float = 0.0,
+        beta_kwh_to_usd: float = 0.0,
         charging_stations: Optional[List[Dict[str, Any]]] = None,
         station_overhead_min: float = 5.0,
         max_charge_rate_kw_default: float = 50.0,
@@ -548,6 +553,7 @@ class SOCResourceRouter:
         soc_to_bucket = lambda soc: int(np.clip(round(soc / soc_step), 0, num_buckets - 1))
         bucket_to_soc = lambda b: np.clip(b * soc_step, 0.0, 1.0)
         min_bucket = soc_to_bucket(min_soc)
+        term_bucket = soc_to_bucket(terminal_min_soc) if terminal_min_soc is not None else min_bucket
         init_bucket = soc_to_bucket(initial_soc)
 
         import heapq
@@ -569,7 +575,7 @@ class SOCResourceRouter:
             if state in visited:
                 continue
             visited.add(state)
-            if node == destination and b >= min_bucket:
+            if node == destination and b >= term_bucket:
                 break
 
             for _, v, key, edata in G.out_edges(node, keys=True, data=True):
@@ -582,7 +588,15 @@ class SOCResourceRouter:
                 if new_soc < min_soc - 1e-9:
                     continue
                 new_b = soc_to_bucket(new_soc)
-                edge_cost = e_kwh + gamma_time_weight * (travel_time_s / 3600.0)
+                time_h = travel_time_s / 3600.0
+                if objective == "time":
+                    edge_cost = time_h
+                elif objective == "cost":
+                    edge_cost = alpha_usd_per_hour * time_h
+                elif objective == "weighted":
+                    edge_cost = beta_kwh_to_usd * e_kwh + alpha_usd_per_hour * time_h
+                else:
+                    edge_cost = e_kwh + (gamma_time_weight or 0.0) * time_h
                 new_cost = cost + edge_cost
                 new_time_s = best_time_s[state] + travel_time_s
                 next_state = (v, new_b)
@@ -605,10 +619,16 @@ class SOCResourceRouter:
                     added_kwh = added_soc * effective_capacity
                     time_h = added_kwh / max(max_power_kw, 0.1)
                     time_s = time_h * 3600.0 + station_overhead_min * 60.0
-                    base_time_cost = gamma_time_weight * (time_s / 3600.0)
-                    price = float(st.get("cost_per_kwh", st.get("estimated_cost_per_kwh", 0.35)))
-                    price_cost = price_weight_kwh_per_usd * price * added_kwh if price_weight_kwh_per_usd > 0 else 0.0
-                    charge_cost = base_time_cost + price_cost
+                    arrival_time = departure_time + timedelta(seconds=best_time_s[state])
+                    price_per_kwh = get_price_per_kwh(st, arrival_time, CHARGING_CONFIG if isinstance(CHARGING_CONFIG, dict) else {}, is_home=False)
+                    if objective == "time":
+                        charge_cost = time_h
+                    elif objective == "cost":
+                        charge_cost = added_kwh * price_per_kwh + alpha_usd_per_hour * time_h
+                    elif objective == "weighted":
+                        charge_cost = beta_kwh_to_usd * added_kwh + alpha_usd_per_hour * time_h
+                    else:
+                        charge_cost = added_kwh + (gamma_time_weight or 0.0) * time_h
                     new_cost = cost + charge_cost
                     new_time = best_time_s[state] + time_s
                     next_state = (node, nb)
@@ -621,15 +641,15 @@ class SOCResourceRouter:
                             "added_kwh": added_kwh,
                             "time_s": time_s,
                             "power_kw": max_power_kw,
-                            "price_usd_per_kwh": price,
-                            "cost_added_kwh_units": charge_cost,
+                            "price_usd_per_kwh": price_per_kwh,
+                            "cost_added": charge_cost,
                         }
                         heapq.heappush(pq, (new_cost, node, nb))
                         relax_charge += 1
 
         best_final_state = None
         best_final_cost = float("inf")
-        for b in range(min_bucket, num_buckets):
+        for b in range(term_bucket, num_buckets):
             s = (destination, b)
             c = best_cost.get(s)
             if c is not None and c < best_final_cost:
@@ -655,10 +675,16 @@ class SOCResourceRouter:
         total_energy = sum(a.get("energy_kwh", 0.0) for a in actions if a["type"] == "drive")
         total_time_s = sum(a.get("time_s", 0.0) for a in actions)
         num_charges = sum(1 for a in actions if a["type"] == "charge")
+        # Always compute USD cost from charge actions for KPI comparability, regardless of optimization objective
+        total_cost_usd = 0.0
+        for a in actions:
+            if a["type"] == "charge":
+                total_cost_usd += a.get("added_kwh", 0.0) * a.get("price_usd_per_kwh", 0.0)
 
         info(
             f"SOC routing done: path_nodes={len(path_nodes)}, drives={relax_drive}, charges={relax_charge}, "
-            f"total_energy_kwh={total_energy:.3f}, total_time_s={total_time_s:.1f}",
+            f"total_energy_kwh={total_energy:.3f}, total_time_s={total_time_s:.1f}, "
+            f"total_cost_usd={(total_cost_usd if total_cost_usd is not None else 0.0):.2f}",
             "optimization",
         )
         return {
@@ -669,6 +695,7 @@ class SOCResourceRouter:
                 "energy_kwh": total_energy,
                 "travel_time_s": total_time_s,
                 "num_charges": num_charges,
+                "cost_usd": total_cost_usd,
             },
         }
 
@@ -763,5 +790,39 @@ def ortools_vrp_placeholder():
     - Optional charging stops as extra nodes with service times
     Implement once visit sets and fleet size are defined.
     """
-    pass
+    try:
+        from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+    except Exception:
+        warning("OR-Tools not available; install ortools to enable VRP prototype", "optimization")
+        return None
+
+    # Minimal scaffold (not executing) to illustrate wiring
+    def build_model(num_vehicles: int, stops: List[Dict[str, float]], depot_index: int = 0):
+        manager = pywrapcp.RoutingIndexManager(len(stops), num_vehicles, depot_index)
+        routing = pywrapcp.RoutingModel(manager)
+
+        def distance_km(i, j):
+            a, b = stops[i], stops[j]
+            dy = a['lat'] - b['lat']
+            dx = a['lon'] - b['lon']
+            return float((dy * dy + dx * dx) ** 0.5 * 111.0)
+
+        # Energy/Cost callback placeholder using approximate kWh from km
+        def cost_callback(from_index, to_index):
+            i = manager.IndexToNode(from_index)
+            j = manager.IndexToNode(to_index)
+            km = distance_km(i, j)
+            kwh = km * 0.18
+            usd = kwh * 0.30
+            return int(usd * 1000)  # integer cost
+
+        transit_cb = routing.RegisterTransitCallback(cost_callback)
+        routing.SetArcCostEvaluatorOfAllVehicles(transit_cb)
+
+        search_params = pywrapcp.DefaultRoutingSearchParameters()
+        search_params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+        # Not solved here; caller would populate real ML/ToU callbacks and solve
+        return manager, routing, search_params
+
+    return {"build_model": build_model}
 
