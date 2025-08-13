@@ -11,6 +11,7 @@ import networkx as nx
 import sys
 import os
 import argparse
+import numpy as np
 # Ensure project root is on sys.path so 'config' and 'src' are importable
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 if ROOT_DIR not in sys.path:
@@ -25,7 +26,10 @@ from src.models.route_optimization.optimization import (
 from src.data_generation.advanced_energy_model import AdvancedEVEnergyModel
 from src.utils.logger import info, warning, debug, error, print_summary
 from tqdm import tqdm
+import numpy as np
 
+# Charging infrastructure manager for real station data
+from src.data_processing.openchargemap_api2 import ChargingInfrastructureManager
 
 def load_contexts_for_day(date: datetime, fleet_info: pd.DataFrame, weather: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
     """
@@ -188,6 +192,7 @@ def optimize_fleet_day(
     validate_physics: bool = True,
     trip_sample_frac: Optional[float] = None,
     trip_sample_n: Optional[int] = None,
+    data_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Re-run routing for all trips on a given date using ML energy-aware routing (and optional SOC planning),
@@ -204,6 +209,43 @@ def optimize_fleet_day(
     seg_router = SegmentEnergyRouter()
     soc_router = SOCResourceRouter()
     algo = (algorithm or OPTIMIZATION_CONFIG.get('route_optimization_algorithm', 'dijkstra')).lower()
+    # Load combined charging infrastructure once for the day
+    stations_df = None
+    try:
+        cim = ChargingInfrastructureManager()
+        stations_df = cim.get_combined_infrastructure()
+        if stations_df is not None and not stations_df.empty:
+            info(f"Loaded {len(stations_df)} charging stations for SOC planning", "optimize_fleet")
+        else:
+            stations_df = None
+    except Exception as e:
+        warning(f"Could not load charging infrastructure: {e}", "optimize_fleet")
+
+    def _stations_to_router_format(df: Optional[pd.DataFrame]) -> Optional[List[Dict[str, Any]]]:
+        if df is None or df.empty:
+            return None
+        cols = set(df.columns)
+        lat_col = 'latitude' if 'latitude' in cols else None
+        lon_col = 'longitude' if 'longitude' in cols else None
+        if lat_col is None or lon_col is None:
+            return None
+        out: List[Dict[str, Any]] = []
+        for _, r in df.iterrows():
+            try:
+                st = {
+                    'station_id': r.get('station_id'),
+                    'latitude': float(r[lat_col]),
+                    'longitude': float(r[lon_col]),
+                    'max_power_kw': float(r.get('max_power_kw', 50.0)),
+                    'estimated_cost_per_kwh': float(r.get('estimated_cost_per_kwh', np.nan)) if pd.notna(r.get('estimated_cost_per_kwh', np.nan)) else None,
+                    'cost_usd_per_kwh': float(r.get('cost_usd_per_kwh', np.nan)) if pd.notna(r.get('cost_usd_per_kwh', np.nan)) else None,
+                }
+                out.append(st)
+            except Exception:
+                continue
+        return out if out else None
+
+    stations_list = _stations_to_router_format(stations_df)
 
     results: List[Dict[str, Any]] = []
     trips_day = routes_df[routes_df['date'] == date.strftime('%Y-%m-%d')]
@@ -286,6 +328,35 @@ def optimize_fleet_day(
             init_soc = float(trip.get('initial_soc', 0.7))
             gamma = float(OPTIMIZATION_CONFIG.get('gamma_time_weight', 0.02))
             price_w = float(OPTIMIZATION_CONFIG.get('price_weight_kwh_per_usd', 0.0))
+            soc_objective = str(OPTIMIZATION_CONFIG.get('soc_objective', 'energy'))
+            alpha_usd_per_hour = float(OPTIMIZATION_CONFIG.get('alpha_usd_per_hour', 0.0))
+            beta_kwh_to_usd = float(OPTIMIZATION_CONFIG.get('beta_kwh_to_usd', 0.0))
+            # Determine terminal reserve based on planning mode
+            planning_mode = str(OPTIMIZATION_CONFIG.get('planning_mode', 'myopic'))
+            reserve_soc = float(OPTIMIZATION_CONFIG.get('reserve_soc', 0.15))
+            reserve_kwh = float(OPTIMIZATION_CONFIG.get('reserve_kwh', 0.0))
+            terminal_min_soc = 0.12
+            if planning_mode in ('next_trip', 'rolling_horizon'):
+                # If next trip exists, approximate next energy and convert to SOC reserve
+                next_energy_kwh = None
+                # Try to estimate from baseline rows if available
+                try:
+                    # Find this vehicle's trips for the day in routes_df and locate next by time
+                    veh_trips = trips_day[trips_day['vehicle_id'] == vehicle_id]
+                    # Use baseline total_consumption_kwh as proxy for each trip; fall back to reserve_kwh
+                    next_rows = veh_trips[veh_trips['start_time'] > trip.get('start_time')]
+                    if len(next_rows) > 0:
+                        next_energy_kwh = float(next_rows.iloc[0].get('total_consumption_kwh', np.nan))
+                except Exception:
+                    next_energy_kwh = None
+                eff_cap = float(ctx['vehicle'].get('battery_capacity', 60.0))
+                if reserve_kwh > 0:
+                    terminal_min_soc = max(terminal_min_soc, min(0.95, reserve_kwh / max(eff_cap, 1e-6)))
+                elif next_energy_kwh is not None and not np.isnan(next_energy_kwh):
+                    terminal_min_soc = max(terminal_min_soc, min(0.95, next_energy_kwh / max(eff_cap, 1e-6)))
+                else:
+                    terminal_min_soc = max(terminal_min_soc, reserve_soc)
+
             soc_plan = soc_router.soc_aware_shortest_path(
                 G, origin, dest,
                 vehicle_context=ctx['vehicle'],
@@ -295,10 +366,14 @@ def optimize_fleet_day(
                 nominal_battery_capacity_kwh=nominal_cap,
                 initial_soc=init_soc,
                 min_soc=0.12,
+                terminal_min_soc=terminal_min_soc,
                 soc_step=0.02,
                 gamma_time_weight=gamma,
                 price_weight_kwh_per_usd=price_w,
-                charging_stations=None,
+                objective=soc_objective,
+                alpha_usd_per_hour=alpha_usd_per_hour,
+                beta_kwh_to_usd=beta_kwh_to_usd,
+                charging_stations=stations_list,
             )
             path = soc_plan.get('path', [])
             if path:
@@ -333,6 +408,9 @@ def optimize_fleet_day(
                     )
                 reroute_eval.update({'vehicle_id': vehicle_id, 'date': date.strftime('%Y-%m-%d'), 'trip_id': trip.get('trip_id')})
                 reroute_eval['soc_metrics'] = soc_plan.get('metrics', {})
+                # Carry explicit SOC cost in USD if present for KPI join later
+                if isinstance(soc_plan.get('metrics'), dict) and ('cost_usd' in soc_plan['metrics']):
+                    reroute_eval['soc_cost_usd'] = soc_plan['metrics']['cost_usd']
                 results.append(reroute_eval)
 
     return {
@@ -390,9 +468,33 @@ def main(
         if isinstance(cfg_frac, (float, int)) and 0 < float(cfg_frac) < 1:
             trip_sample_frac = float(cfg_frac)
 
+    # Allow CLI to override SOC objective weights at runtime
+    if algorithm is not None:
+        OPTIMIZATION_CONFIG['route_optimization_algorithm'] = algorithm
+    if hasattr(sys.modules[__name__], 'args'):
+        pass
+
     daily_results: List[Dict[str, Any]] = []
     for d in tqdm(days, desc="Days"):
         date = datetime.fromisoformat(d)
+        # Apply CLI overrides for SOC objective if provided
+        if args.soc_objective is not None:
+            OPTIMIZATION_CONFIG['soc_objective'] = args.soc_objective
+        if args.alpha_usd_per_hour is not None:
+            OPTIMIZATION_CONFIG['alpha_usd_per_hour'] = args.alpha_usd_per_hour
+        if args.beta_kwh_to_usd is not None:
+            OPTIMIZATION_CONFIG['beta_kwh_to_usd'] = args.beta_kwh_to_usd
+        if args.planning_mode is not None:
+            OPTIMIZATION_CONFIG['planning_mode'] = args.planning_mode
+        if args.reserve_soc is not None:
+            OPTIMIZATION_CONFIG['reserve_soc'] = args.reserve_soc
+        if args.reserve_kwh is not None:
+            OPTIMIZATION_CONFIG['reserve_kwh'] = args.reserve_kwh
+        if args.horizon_trips is not None:
+            OPTIMIZATION_CONFIG['horizon_trips'] = args.horizon_trips
+        if args.horizon_hours is not None:
+            OPTIMIZATION_CONFIG['horizon_hours'] = args.horizon_hours
+
         res = optimize_fleet_day(
             G, routes, fleet, weather, date,
             algorithm=algorithm,
@@ -400,6 +502,7 @@ def main(
             validate_physics=validate_physics,
             trip_sample_frac=trip_sample_frac,
             trip_sample_n=trip_sample_n,
+            data_dir=data_dir,
         )
         daily_results.append(res)
 
@@ -445,28 +548,53 @@ def main(
             on=['date', 'vehicle_id', 'trip_id'],
             how='inner'
         )
-        # Compute metrics
+        # Compute metrics (safe denominators)
+        eps = 1e-6
         merged['baseline_energy_kwh'] = merged['total_consumption_kwh']
         merged['optimized_energy_kwh'] = merged['ml_energy_kwh']
         merged['energy_delta_kwh'] = merged['optimized_energy_kwh'] - merged['baseline_energy_kwh']
-        merged['energy_delta_pct'] = merged['energy_delta_kwh'] / merged['baseline_energy_kwh'] * 100.0
+        merged['energy_delta_pct'] = merged['energy_delta_kwh'] / merged['baseline_energy_kwh'].where(merged['baseline_energy_kwh'].abs() > eps, np.nan) * 100.0
 
         merged['baseline_time_s'] = merged['total_time_minutes'] * 60.0
         merged['optimized_time_s'] = merged['travel_time_s']
         merged['time_delta_s'] = merged['optimized_time_s'] - merged['baseline_time_s']
-        merged['time_delta_pct'] = merged['time_delta_s'] / merged['baseline_time_s'] * 100.0
+        merged['time_delta_pct'] = merged['time_delta_s'] / merged['baseline_time_s'].where(merged['baseline_time_s'].abs() > eps, np.nan) * 100.0
 
         merged['baseline_distance_m'] = merged['total_distance_km'] * 1000.0
         merged['optimized_distance_m'] = merged['length_m']
         merged['distance_delta_m'] = merged['optimized_distance_m'] - merged['baseline_distance_m']
-        merged['distance_delta_pct'] = merged['distance_delta_m'] / merged['baseline_distance_m'] * 100.0
+        merged['distance_delta_pct'] = merged['distance_delta_m'] / merged['baseline_distance_m'].where(merged['baseline_distance_m'].abs() > eps, np.nan) * 100.0
 
         # Estimated cost using base electricity cost (approximation)
         base_cost = float(CHARGING_CONFIG.get('base_electricity_cost', 0.15))
         merged['baseline_cost_est_usd'] = merged['baseline_energy_kwh'] * base_cost
         merged['optimized_cost_est_usd'] = merged['optimized_energy_kwh'] * base_cost
         merged['cost_delta_usd'] = merged['optimized_cost_est_usd'] - merged['baseline_cost_est_usd']
-        merged['cost_delta_pct'] = merged['cost_delta_usd'] / merged['baseline_cost_est_usd'] * 100.0
+        merged['cost_delta_pct'] = merged['cost_delta_usd'] / merged['baseline_cost_est_usd'].where(merged['baseline_cost_est_usd'].abs() > eps, np.nan) * 100.0
+
+        # Attach SOC USD cost if available from planning runs
+        if 'soc_cost_usd' in optimized_df.columns:
+            merged = pd.merge(
+                merged,
+                optimized_df[['date','vehicle_id','trip_id','soc_cost_usd']],
+                on=['date','vehicle_id','trip_id'],
+                how='left'
+            )
+
+        # Baseline true USD from charging_sessions.csv if present
+        baseline_cost_usd_true = None
+        sessions_path = Path(Path(routes_csv_path).parent if 'routes_csv_path' in locals() else data_dir) / 'charging_sessions.csv'
+        try:
+            if sessions_path.exists():
+                sessions = pd.read_csv(sessions_path)
+                # Derive date from start_time
+                sessions['date'] = pd.to_datetime(sessions['start_time']).dt.date.astype(str)
+                # Aggregate by date, vehicle; we lack trip_id linkage, so align at day+vehicle level
+                agg = sessions.groupby(['date','vehicle_id'], as_index=False)['cost_usd'].sum().rename(columns={'cost_usd':'baseline_cost_usd_true'})
+                merged = pd.merge(merged, agg, on=['date','vehicle_id'], how='left')
+                baseline_cost_usd_true = 'baseline_cost_usd_true'
+        except Exception:
+            pass
 
         # Save per-trip KPI table
         kpi_csv = Path(output_dir) / 'fleet_optimization_kpis.csv'
@@ -474,10 +602,11 @@ def main(
 
         # Build summary (ignore NaNs)
         def _mean(series: pd.Series) -> Optional[float]:
-            try:
-                return float(series.dropna().mean()) if len(series.dropna()) else None
-            except Exception:
-                return None
+            s = series.dropna()
+            return float(s.mean()) if len(s) else None
+
+        def _count_valid(series: pd.Series) -> int:
+            return int(series.dropna().shape[0])
 
         kpi_summary = {
             'total_trips_evaluated': int(len(merged)),
@@ -485,15 +614,32 @@ def main(
             'avg_optimized_energy_kwh': _mean(merged['optimized_energy_kwh']),
             'avg_energy_delta_kwh': _mean(merged['energy_delta_kwh']),
             'avg_energy_delta_pct': _mean(merged['energy_delta_pct']),
+            'energy_pct_valid_n': _count_valid(merged['energy_delta_pct']),
             'avg_baseline_time_s': _mean(merged['baseline_time_s']),
             'avg_optimized_time_s': _mean(merged['optimized_time_s']),
             'avg_time_delta_s': _mean(merged['time_delta_s']),
             'avg_time_delta_pct': _mean(merged['time_delta_pct']),
+            'time_pct_valid_n': _count_valid(merged['time_delta_pct']),
             'avg_baseline_cost_usd_est': _mean(merged['baseline_cost_est_usd']),
             'avg_optimized_cost_usd_est': _mean(merged['optimized_cost_est_usd']),
             'avg_cost_delta_usd_est': _mean(merged['cost_delta_usd']),
             'avg_cost_delta_pct_est': _mean(merged['cost_delta_pct']),
+            'cost_pct_valid_n': _count_valid(merged['cost_delta_pct']),
+            'cost_estimation_mode': 'flat_rate_per_kwh',
+            'flat_rate_usd_per_kwh': base_cost,
         }
+
+        # If we have SOC cost and/or true baseline USD, add USD KPIs
+        if 'soc_cost_usd' in merged.columns:
+            kpi_summary.update({
+                'avg_optimized_cost_usd_soc': _mean(merged['soc_cost_usd']),
+            })
+        if baseline_cost_usd_true is not None:
+            # Roll up baseline true USD to match per-trip granularity by day-vehicle average share
+            # Provide day-vehicle total for transparency
+            kpi_summary.update({
+                'avg_baseline_cost_usd_true_dayveh': _mean(merged[baseline_cost_usd_true]),
+            })
 
     # Also keep a compact summary for quick glance
     summary_json_path = Path(output_dir) / 'fleet_optimization_summary.json'
@@ -529,6 +675,14 @@ if __name__ == "__main__":
     parser.add_argument('--end-date', type=str, default=None, help='Inclusive end date YYYY-MM-DD')
     parser.add_argument('--dates', type=str, nargs='*', default=None, help='Specific dates YYYY-MM-DD to run')
     parser.add_argument('--max-days', type=int, default=None, help='Limit number of days to run (overrides config)')
+    parser.add_argument('--soc-objective', type=str, choices=['energy','cost','time','weighted'], default=None)
+    parser.add_argument('--alpha-usd-per-hour', type=float, default=None)
+    parser.add_argument('--beta-kwh-to-usd', type=float, default=None)
+    parser.add_argument('--planning-mode', type=str, choices=['myopic','next_trip','rolling_horizon'], default=None)
+    parser.add_argument('--reserve-soc', type=float, default=None)
+    parser.add_argument('--reserve-kwh', type=float, default=None)
+    parser.add_argument('--horizon-trips', type=int, default=None)
+    parser.add_argument('--horizon-hours', type=float, default=None)
 
     args = parser.parse_args()
 
