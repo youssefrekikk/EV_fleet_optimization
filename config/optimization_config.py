@@ -27,9 +27,29 @@ OPTIMIZATION_CONFIG = {
 
     # Fleet evaluation defaults (used by optimize_fleet.py when CLI not provided)
     # Limit how many days to process (None means all)
-    "fleet_eval_max_days": 3,
+    "fleet_eval_max_days": 1,
     # Sample fraction of trips per day to speed up runs (None means all trips)
-    "fleet_eval_trip_sample_frac": 0.4,
+    "fleet_eval_trip_sample_frac": 0.7,
+
+    # SOC routing objective and weights (defaults)
+    # objective: 'energy' | 'cost' | 'time' | 'weighted'
+    "soc_objective": "energy",
+    # Value of time in USD per hour (used for 'cost' and 'weighted')
+    "alpha_usd_per_hour": 0.0,
+    # Convert kWh to USD for weighted objective (typical average price)
+    "beta_kwh_to_usd": 0.0,
+
+    # Planning horizon / future-knowledge knobs
+    # 'myopic' (no look-ahead), 'next_trip' (reserve for next trip), 'rolling_horizon' (reserve for K trips / T hours)
+    "planning_mode": "myopic",
+    # Reserve as SOC fraction if no future info or as base floor
+    "reserve_soc": 0.15,
+    # Reserve as kWh (overrides reserve_soc if > 0 when future need known)
+    "reserve_kwh": 0.0,
+    # Look-ahead depth
+    "horizon_trips": 1,
+    # Or time horizon in hours (optional)
+    "horizon_hours": 0.0,
 }
 
 __all__ = ["OPTIMIZATION_CONFIG"]
