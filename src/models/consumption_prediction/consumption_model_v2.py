@@ -55,7 +55,10 @@ class SegmentEnergyPredictor:
     Only uses features available before the segment is driven (no look-ahead bias).
     """
     def __init__(self, data_dir: str = None):
-        self.data_dir = data_dir or Path(__file__).parent.parent.parent.parent / "data" / "synthetic"
+        if data_dir is None:
+            self.data_dir = Path(__file__).parent.parent.parent.parent / "data" / "synthetic"
+        else:
+            self.data_dir = Path(data_dir)
         self.models = {}
         self.scalers = {}
         self.encoders = {}
@@ -79,6 +82,13 @@ class SegmentEnergyPredictor:
 
     def engineer_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """Professional, detailed feature engineering for segment-level prediction."""
+        # Ensure critical numeric columns are properly typed
+        critical_numeric_cols = ['distance_m', 'energy_kwh', 'start_elevation_m', 'end_elevation_m', 
+                               'start_speed_kmh', 'end_speed_kmh']
+        for col in critical_numeric_cols:
+            if col in data.columns:
+                data[col] = pd.to_numeric(data[col], errors='coerce')
+        
         # --- Spatial features ---
         data['distance_km'] = data['distance_m'] / 1000
         # --- Distance bins ---
