@@ -4,6 +4,7 @@ import math
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from collections import OrderedDict
 
 import networkx as nx
 import numpy as np
@@ -12,6 +13,7 @@ import pandas as pd
 from src.models.consumption_prediction.consumption_model_v2 import (
     SegmentEnergyPredictor,
 )
+from src.models.consumption_prediction.routing_features import engineer_features_for_routing
 from pulp import LpProblem, LpVariable, LpMinimize, lpSum, LpStatus, value
 from config.ev_config import EV_MODELS, CHARGING_CONFIG
 from config.optimization_config import OPTIMIZATION_CONFIG
@@ -21,6 +23,62 @@ from src.utils.logger import info, warning, debug, error
 from src.utils.tariff import get_price_per_kwh
 
 
+
+def _node_lat_lon(G, node: Any) -> Tuple[float, float]:
+    """
+    Robustly return (lat, lon) for a graph node.
+    Supports OSMnx style ('y','x'), ('lat','lon'), or ('latitude','longitude').
+    Falls back to (0.0, 0.0) if nothing found.
+    """
+    n = G.nodes[node] if node in G.nodes else {}
+    # try osmnx style
+    try:
+        if "y" in n and "x" in n:
+            return float(n.get("y", 0.0)), float(n.get("x", 0.0))
+    except Exception:
+        pass
+    # try common names
+    for lat_key, lon_key in (("lat", "lon"), ("latitude", "longitude")):
+        try:
+            if lat_key in n and lon_key in n:
+                return float(n.get(lat_key, 0.0)), float(n.get(lon_key, 0.0))
+        except Exception:
+            pass
+    # heuristic fallback: try any numeric-looking keys
+    lat_val = None
+    lon_val = None
+    for k, v in n.items():
+        if isinstance(k, str):
+            kl = k.lower()
+            if "lat" in kl or (kl == "y"):
+                try:
+                    lat_val = float(v)
+                except Exception:
+                    lat_val = None
+            if "lon" in kl or (kl == "x"):
+                try:
+                    lon_val = float(v)
+                except Exception:
+                    lon_val = None
+    if lat_val is not None and lon_val is not None:
+        return lat_val, lon_val
+    # ultimate fallback
+    return 0.0, 0.0
+
+
+def _bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Return heading in degrees from point1 to point2 (0-360)."""
+    try:
+        if (lat1 == lat2) and (lon1 == lon2):
+            return 0.0
+        phi1, phi2 = math.radians(lat1), math.radians(lat2)
+        dlon = math.radians(lon2 - lon1)
+        x = math.sin(dlon) * math.cos(phi2)
+        y = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlon)
+        bearing = (math.degrees(math.atan2(x, y)) + 360.0) % 360.0
+        return float(bearing)
+    except Exception:
+        return 0.0
 def _season_from_month(month: int) -> str:
     if month in (12, 1, 2):
         return "winter"
@@ -37,6 +95,33 @@ def _safe_get_edge_attr(edata: Dict[str, Any], key: str, default: float) -> floa
         return float(value_)
     except Exception:
         return float(default)
+
+
+class LRUCache:
+    """Simple LRU cache with fixed size to prevent memory growth"""
+    def __init__(self, maxsize: int = 10000):
+        self.maxsize = maxsize
+        self.cache = OrderedDict()
+    
+    def get(self, key: Any) -> Optional[Any]:
+        if key in self.cache:
+            # Move to end (most recently used)
+            self.cache.move_to_end(key)
+            return self.cache[key]
+        return None
+    
+    def put(self, key: Any, value: Any) -> None:
+        if key in self.cache:
+            # Move to end
+            self.cache.move_to_end(key)
+        else:
+            # Remove oldest if at capacity
+            if len(self.cache) >= self.maxsize:
+                self.cache.popitem(last=False)
+        self.cache[key] = value
+    
+    def __contains__(self, key: Any) -> bool:
+        return key in self.cache
 
 
 def _edge_distance_m(G: nx.MultiDiGraph, u: Any, v: Any, edata: Dict[str, Any]) -> float:
@@ -75,6 +160,7 @@ class EnergyWeightFunction:
         weather_context: Dict[str, Any],
         departure_time: datetime,
         shared_cache: Optional[Dict[Tuple[Any, Any, int, Tuple], float]] = None,
+        lru_cache_size: int = 10000,
     ) -> None:
         self.G = graph
         self.predictor = predictor
@@ -84,6 +170,7 @@ class EnergyWeightFunction:
         self.departure_time = departure_time
         self.cache: Dict[Tuple[Any, Any, int, Tuple], float] = {}
         self.shared_cache = shared_cache
+        self.lru_cache = LRUCache(lru_cache_size)
 
         # Precompute simple context fields used for caching keys
         self._context_key = (
@@ -94,61 +181,265 @@ class EnergyWeightFunction:
             int(bool(self.weather.get("is_raining", False))),
             int(self.departure_time.hour),
         )
+        
+        # Precompute static context for batched predictions
+        # Note: Categorical fields will be encoded by routing_features.py
+        self._static_context = {
+            "model": self.vehicle.get("model"),
+            "driver_profile": self.driver.get("driver_profile", self.vehicle.get("driver_profile")),
+            "driving_style": self.driver.get("driving_style", self.vehicle.get("driving_style", "normal")),
+            "driver_personality": self.driver.get("driver_personality", self.vehicle.get("driver_personality")),
+            "weather_temp_c": self.weather.get("temperature"),
+            "weather_wind_kmh": self.weather.get("wind_speed_kmh"),
+            "weather_is_raining": self.weather.get("is_raining"),
+            "season": _season_from_month(self.departure_time.month),
+        }
+
+    
+
+    def _batch_predict_edges(self, edges: List[Tuple[Any, Any, int, Dict[str, Any]]]) -> Dict[Tuple[Any, Any, int], float]:
+        """
+        Batch predict energy for multiple edges at once with schema alignment.
+        This version is robust: it computes lat/lon+heading, runs routing feature engineering,
+        aligns to the trained predictor's feature_columns (fills missing cols), and returns
+        per-edge kWh predictions. Caches results and is defensive against missing attributes.
+        """
+        if not edges:
+            return {}
+
+        batch_data = []
+        edge_keys = []
+
+        for u, v, key, edata in edges:
+            distance_m = _edge_distance_m(self.G, u, v, edata)
+            speed_kph = _safe_get_edge_attr(edata, "speed_kph", 40.0)
+            travel_time_s = _safe_get_edge_attr(
+                edata, "travel_time", distance_m / max(speed_kph * 1000.0 / 3600.0, 1e-6)
+            )
+
+            start_time = self.departure_time
+            end_time = start_time + timedelta(seconds=travel_time_s)
+
+            # Elevations (fallback to 50 m)
+            start_elev = float(self.G.nodes[u].get("elevation_m", 50.0))
+            end_elev = float(self.G.nodes[v].get("elevation_m", 50.0))
+
+            # Lat/lon + heading
+            lat1, lon1 = _node_lat_lon(self.G, u)
+            lat2, lon2 = _node_lat_lon(self.G, v)
+            heading = _bearing(lat1, lon1, lat2, lon2)
+
+            row = {
+                "distance_m": distance_m,
+                "start_time": start_time,
+                "end_time": end_time,
+                "start_speed_kmh": speed_kph,
+                "end_speed_kmh": speed_kph,
+                "start_elevation_m": start_elev,
+                "end_elevation_m": end_elev,
+                "start_lat": lat1,
+                "start_lon": lon1,
+                "heading": heading,
+                "date": start_time.date().isoformat(),
+                "trip_id": f"trip_{start_time.timestamp()}",
+                "segment_id": f"seg_{u}_{v}_{key}",
+                "energy_kwh": 0.0,
+                # static context may include weather_temp_c / weather_wind_kmh / humidity / efficiency
+                **(self._static_context if getattr(self, "_static_context", None) is not None else {}),
+            }
+
+            batch_data.append(row)
+            edge_keys.append((u, v, key))
+
+        # Check if ML model is available
+        if hasattr(self.predictor, 'model_loaded') and self.predictor.model_loaded and hasattr(self.predictor, 'models') and self.predictor.models:
+            try:
+                df = pd.DataFrame(batch_data)
+
+                # harmonize weather naming
+                if "temperature" not in df.columns and "weather_temp_c" in df.columns:
+                    df["temperature"] = pd.to_numeric(df["weather_temp_c"], errors="coerce")
+                if "wind_speed_kmh" not in df.columns and "weather_wind_kmh" in df.columns:
+                    df["wind_speed_kmh"] = pd.to_numeric(df["wind_speed_kmh"], errors="coerce")
+                if "humidity" not in df.columns and "weather_humidity" in df.columns:
+                    df["humidity"] = pd.to_numeric(df["weather_humidity"], errors="coerce")
+
+                # feature engineering for routing (keeps training-critical columns)
+                from src.models.consumption_prediction.routing_features import engineer_features_for_routing
+                df_fe = engineer_features_for_routing(df)
+
+                # Align to trained schema (fill missing with medians, drop extras)
+                if getattr(self.predictor, "feature_columns", None) is not None and hasattr(self.predictor, "align_features_for_inference"):
+                    X = self.predictor.align_features_for_inference(df_fe)
+                else:
+                    X = df_fe.select_dtypes(include=[np.number]).fillna(0)
+
+                # ensure numeric dtype and no NaNs
+                X = X.astype(float).fillna(0.0)
+
+                distances = np.array([max(float(d), 0.0) for d in df["distance_m"].values])
+
+                pred_kwh = self.predictor.predict(
+                    X,
+                    model_name=None,
+                    distance_m=distances,
+                )
+
+                results: Dict[Tuple[Any, Any, int], float] = {}
+                for i, (u, v, key) in enumerate(edge_keys):
+                    weight = max(float(pred_kwh[i]), 1e-9)
+                    results[(u, v, key)] = weight
+
+                    cache_key = (u, v, key, self._context_key)
+                    try:
+                        self.cache[cache_key] = weight
+                    except Exception:
+                        # best-effort caching
+                        pass
+                    if getattr(self, "shared_cache", None) is not None:
+                        try:
+                            self.shared_cache[cache_key] = weight
+                        except Exception:
+                            pass
+                    # lru cache optional
+                    try:
+                        if getattr(self, "lru_cache", None) is not None:
+                            self.lru_cache.put(cache_key, weight)
+                    except Exception:
+                        pass
+
+                return results
+            except Exception as e:
+                # ML prediction failed, use fallback
+                debug(f"Batch ML prediction failed: {e}. Using fallback.", "optimization")
+                # Fall through to fallback calculation
+        else:
+            # ML model not available, use fallback
+            debug("ML model not available, using fallback energy estimation", "optimization")
+
+        # Fallback calculation for all cases
+        try:
+            results = {}
+            for u, v, key, edata in edges:
+                distance_m = _edge_distance_m(self.G, u, v, edata)
+                speed_kph = _safe_get_edge_attr(edata, "speed_kph", 40.0)
+                base_kwh_per_km = 0.18
+                speed_penalty = 1.0 + (40.0 / max(speed_kph, 1.0) - 1.0) * 0.2
+                weight = max((distance_m / 1000.0) * base_kwh_per_km * speed_penalty, 1e-9)
+
+                results[(u, v, key)] = weight
+                cache_key = (u, v, key, self._context_key)
+                try:
+                    self.cache[cache_key] = weight
+                except Exception:
+                    pass
+                if getattr(self, "shared_cache", None) is not None:
+                    try:
+                        self.shared_cache[cache_key] = weight
+                    except Exception:
+                        pass
+                try:
+                    if getattr(self, "lru_cache", None) is not None:
+                        self.lru_cache.put(cache_key, weight)
+                except Exception:
+                    pass
+            return results
+        except Exception as e:
+            # keep previous fallback behavior but include the exception message
+            warning(f"Batch prediction failed, using fallback: {e}", "optimization")
+            # Return empty results, the calling code will handle this
+            return {}
+
 
     def __call__(self, u: Any, v: Any, edata: Dict[str, Any]) -> float:
         # MultiDiGraph may have parallel edges distinguished by 'key'. Use 0 by default.
         key = edata.get("key", 0)
         cache_key = (u, v, key, self._context_key)
-        if self.shared_cache is not None:
-            if cache_key in self.shared_cache:
-                return self.shared_cache[cache_key]
+        
+        # Check LRU cache first (fastest)
+        lru_result = self.lru_cache.get(cache_key)
+        if lru_result is not None:
+            return lru_result
+        
+        # Check shared cache
+        if self.shared_cache is not None and cache_key in self.shared_cache:
+            weight = self.shared_cache[cache_key]
+            self.lru_cache.put(cache_key, weight)
+            return weight
+        
+        # Check local cache
         if cache_key in self.cache:
-            return self.cache[cache_key]
+            weight = self.cache[cache_key]
+            self.lru_cache.put(cache_key, weight)
+            return weight
 
         distance_m = _edge_distance_m(self.G, u, v, edata)
         speed_kph = _safe_get_edge_attr(edata, "speed_kph", 40.0)
         travel_time_s = _safe_get_edge_attr(edata, "travel_time", distance_m / max(speed_kph * 1000 / 3600, 1e-6))
 
-        start_time = self.departure_time
-        end_time = start_time + timedelta(seconds=travel_time_s)
+        # Check if ML model is available
+        if hasattr(self.predictor, 'model_loaded') and self.predictor.model_loaded and hasattr(self.predictor, 'models') and self.predictor.models:
+            # Use ML model for prediction
+            start_time = self.departure_time
+            end_time = start_time + timedelta(seconds=travel_time_s)
 
-        # Minimal row with context; engineer_features will handle dates and missing fields
-        row = {
-            "distance_m": distance_m,
-            "start_time": start_time,
-            "end_time": end_time,
-            "start_speed_kmh": speed_kph,
-            "end_speed_kmh": speed_kph,
-            # Vehicle/driver
-            "model": self.vehicle.get("model"),
-            "driver_profile": self.driver.get("driver_profile", self.vehicle.get("driver_profile")),
-            "driving_style": self.driver.get("driving_style", self.vehicle.get("driving_style", "normal")),
-            "driver_personality": self.driver.get("driver_personality", self.vehicle.get("driver_personality")),
-            # Weather
-            "weather_temp_c": self.weather.get("temperature"),
-            "weather_wind_kmh": self.weather.get("wind_speed_kmh"),
-            "weather_is_raining": self.weather.get("is_raining"),
-            # Season
-            "season": _season_from_month(start_time.month),
-        }
+            # Get elevation from nodes, default to 50.0 if not present
+            start_elevation_m = self.G.nodes[u].get("elevation_m", 50.0)
+            end_elevation_m = self.G.nodes[v].get("elevation_m", 50.0)
 
-        try:
-            df = pd.DataFrame([row])
-            df_fe = self.predictor.engineer_features(df.copy())
-            # Select only known feature columns if available
-            if self.predictor.feature_columns is not None:
-                X = df_fe[self.predictor.feature_columns]
-            else:
-                # Fallback: numeric-only
-                X = df_fe.select_dtypes(include=[np.number])
-            pred_kwh = self.predictor.predict(
-                X,
-                model_name=None,
-                distance_m=np.array([max(distance_m, 0.0)]),
-            )[0]
-            weight = max(float(pred_kwh), 1e-9)
-        except Exception:
-            # Robust fallback: proportional to distance with mild penalty for low speed
+            # Complete row with all required features for feature engineering
+            row = {
+                "distance_m": distance_m,
+                "start_time": start_time,
+                "end_time": end_time,
+                "start_speed_kmh": speed_kph,
+                "end_speed_kmh": speed_kph,
+                "start_elevation_m": start_elevation_m,
+                "end_elevation_m": end_elevation_m,
+                "date": start_time.date().isoformat(),  # Original trip date
+                "trip_id": f"trip_{start_time.timestamp()}",  # Synthetic trip ID
+                "segment_id": f"seg_{u}_{v}_{key}",  # Synthetic segment ID
+                "energy_kwh": 0.0,  # Placeholder for feature engineering compatibility
+                # Vehicle/driver
+                "model": self.vehicle.get("model"),
+                "driver_profile": self.driver.get("driver_profile", self.vehicle.get("driver_profile")),
+                "driving_style": self.driver.get("driving_style", self.vehicle.get("driving_style", "normal")),
+                "driver_personality": self.driver.get("driver_personality", self.vehicle.get("driver_personality")),
+                # Weather
+                "weather_temp_c": self.weather.get("temperature"),
+                "weather_wind_kmh": self.weather.get("wind_speed_kmh"),
+                "weather_is_raining": self.weather.get("is_raining"),
+                # Season
+                "season": _season_from_month(start_time.month),
+            }
+
+            try:
+                df = pd.DataFrame([row])
+                df_fe = engineer_features_for_routing(df.copy())
+                # Use the predictor's alignment method to handle categorical encoding properly
+                if hasattr(self.predictor, "align_features_for_inference"):
+                    X = self.predictor.align_features_for_inference(df_fe)
+                else:
+                    # Fallback: select only known feature columns if available
+                    if self.predictor.feature_columns is not None:
+                        X = df_fe[self.predictor.feature_columns]
+                    else:
+                        # Fallback: numeric-only
+                        X = df_fe.select_dtypes(include=[np.number])
+                pred_kwh = self.predictor.predict(
+                    X,
+                    model_name=None,
+                    distance_m=np.array([max(distance_m, 0.0)]),
+                )[0]
+                weight = max(float(pred_kwh), 1e-9)
+            except Exception as e:
+                # ML prediction failed, use fallback
+                debug(f"ML prediction failed for edge {u}->{v}: {e}. Using fallback.", "optimization")
+                base_kwh_per_km = 0.18  # conservative generic value
+                speed_penalty = 1.0 + (40.0 / max(speed_kph, 1.0) - 1.0) * 0.2
+                weight = max((distance_m / 1000.0) * base_kwh_per_km * speed_penalty, 1e-9)
+        else:
+            # ML model not available, use fallback energy estimation
             base_kwh_per_km = 0.18  # conservative generic value
             speed_penalty = 1.0 + (40.0 / max(speed_kph, 1.0) - 1.0) * 0.2
             weight = max((distance_m / 1000.0) * base_kwh_per_km * speed_penalty, 1e-9)
@@ -157,6 +448,7 @@ class EnergyWeightFunction:
         self.cache[cache_key] = weight
         if self.shared_cache is not None:
             self.shared_cache[cache_key] = weight
+        self.lru_cache.put(cache_key, weight)
         return weight
 
 
@@ -165,17 +457,62 @@ class SegmentEnergyRouter:
 
     def __init__(self, model_path: Optional[Path] = None) -> None:
         self.predictor = SegmentEnergyPredictor()
+        self.model_loaded = False
 
-        # Default to the packaged model path if not provided
+        # Default to the lightweight model path if not provided
         if model_path is None:
-            model_path = Path(__file__).parent.parent / "consumption_prediction" / "segment_energy_model.pkl"
+            # Try lightweight model first, fall back to full model
+            lightweight_path = Path(__file__).parent.parent / "consumption_prediction" / "segment_energy_model_lightweight.pkl"
+            full_path = Path(__file__).parent.parent / "consumption_prediction" / "segment_energy_model.pkl"
+            
+            if lightweight_path.exists():
+                model_path = lightweight_path
+                info("Using lightweight model for better memory efficiency", "optimization")
+            elif full_path.exists():
+                model_path = full_path
+                warning("Lightweight model not found, using full model (may cause memory issues)", "optimization")
+            else:
+                model_path = lightweight_path  # Default path for error message
         self.model_path = Path(model_path)
 
         if self.model_path.exists():
-            self.predictor.load_model(str(self.model_path))
+            try:
+                # Try to load the model with memory management
+                import gc
+                gc.collect()  # Force garbage collection before loading
+                
+                # Check available memory (rough estimate)
+                try:
+                    import psutil
+                    available_memory = psutil.virtual_memory().available
+                    file_size = self.model_path.stat().st_size
+                    
+                    if file_size > available_memory * 0.5:  # If file is more than 50% of available memory
+                        warning(f"Model file size ({file_size / 1024 / 1024:.1f} MB) is large relative to available memory ({available_memory / 1024 / 1024:.1f} MB). Consider using a smaller model or increasing system memory.", "optimization")
+                except ImportError:
+                    # psutil not available, skip memory check
+                    pass
+                
+                self.predictor.load_model(str(self.model_path))
+                self.model_loaded = True
+                gc.collect()  # Clean up after loading
+                info("ML model loaded successfully", "optimization")
+                
+            except MemoryError as e:
+                error(f"Memory error loading model: {e}. The model file is {self.model_path.stat().st_size / 1024 / 1024:.1f} MB. Consider:", "optimization")
+                error("1. Increase system memory", "optimization")
+                error("2. Use a smaller model (e.g., only Random Forest instead of all models)", "optimization")
+                error("3. Retrain with fewer models", "optimization")
+                error("4. Using fallback energy estimation", "optimization")
+                self.model_loaded = False
+            except Exception as e:
+                error(f"Error loading model: {e}", "optimization")
+                error("Using fallback energy estimation", "optimization")
+                self.model_loaded = False
         else:
             # Model not found; allow running with runtime-fitted predictor if user sets it later
-            pass
+            warning(f"Model file not found at {self.model_path}. Will use fallback energy estimation.", "optimization")
+            self.model_loaded = False
 
     def make_weight_function(
         self,
@@ -186,6 +523,7 @@ class SegmentEnergyRouter:
         departure_time: datetime,
         shared_cache: Optional[Dict[Tuple[Any, Any, int, Tuple], float]] = None,
     ) -> EnergyWeightFunction:
+        lru_cache_size = OPTIMIZATION_CONFIG.get("lru_cache_size", 10000)
         return EnergyWeightFunction(
             graph=graph,
             predictor=self.predictor,
@@ -194,6 +532,7 @@ class SegmentEnergyRouter:
             weather_context=weather_context,
             departure_time=departure_time,
             shared_cache=shared_cache,
+            lru_cache_size=lru_cache_size,
         )
 
     @staticmethod
@@ -361,6 +700,130 @@ class SegmentEnergyRouter:
         info(f"A* path length: {len(path)} nodes", "optimization")
         return path
 
+    def custom_astar_batched(
+        self,
+        G: nx.MultiDiGraph,
+        origin: Any,
+        destination: Any,
+        vehicle_context: Dict[str, Any],
+        driver_context: Dict[str, Any],
+        weather_context: Dict[str, Any],
+        departure_time: datetime,
+        heuristic_kwh_per_km: Optional[float] = None,
+        shared_cache: Optional[Dict[Tuple[Any, Any, int, Tuple], float]] = None,
+        batch_size: Optional[int] = None,
+    ) -> List[Any]:
+        """
+        Custom A* implementation with batched ML predictions for better performance.
+        This avoids the per-edge ML calls that make NetworkX's A* slow.
+        """
+        info(f"Custom A* (batched) from {origin} to {destination}", "optimization")
+        
+        # Create weight function for batched predictions
+        weight_fn = self.make_weight_function(
+            G, vehicle_context, driver_context, weather_context, departure_time, shared_cache=shared_cache
+        )
+        
+        # Improved heuristic
+        def h(u: Any, v: Any) -> float:
+            d_m = self._node_distance_m(G, u, v)
+            if heuristic_kwh_per_km is None:
+                # Physics-informed lower bound using rolling resistance only
+                try:
+                    model_name = vehicle_context.get("model")
+                    specs = EV_MODELS.get(model_name, {})
+                    mass_kg = float(specs.get("weight", 1800))
+                except Exception:
+                    mass_kg = 1800.0
+                g = float(PHYSICS_CONSTANTS.get("gravity", 9.81))
+                cr = float(PHYSICS_CONSTANTS.get("rolling_resistance", 0.012))
+                force_n = cr * mass_kg * g
+                kwh_per_km = max(0.005, (force_n * 1000.0) / 3.6e6)
+            else:
+                kwh_per_km = max(0.0, float(heuristic_kwh_per_km))
+            return (d_m / 1000.0) * kwh_per_km
+        
+        # A* implementation with batched predictions
+        import heapq
+        
+        # Get batch size from config
+        if batch_size is None:
+            batch_size = OPTIMIZATION_CONFIG.get("batch_size", 50)
+        
+        # Priority queue: (f_score, node)
+        open_set = [(0, origin)]
+        heapq.heapify(open_set)
+        
+        # g_score[node] = cost from start to node
+        g_score = {origin: 0}
+        
+        # f_score[node] = g_score[node] + heuristic(node, goal)
+        f_score = {origin: h(origin, destination)}
+        
+        # came_from[node] = previous node in optimal path
+        came_from = {}
+        
+        # Track nodes in open set for O(1) lookup
+        open_set_nodes = {origin}
+        
+        # Local cache for edge weights in this search
+        local_edge_cache = {}
+        
+        while open_set:
+            current_f, current = heapq.heappop(open_set)
+            open_set_nodes.remove(current)
+            
+            if current == destination:
+                # Reconstruct path
+                path = []
+                while current in came_from:
+                    path.append(current)
+                    current = came_from[current]
+                path.append(origin)
+                path.reverse()
+                info(f"Custom A* path length: {len(path)} nodes", "optimization")
+                return path
+            
+            # Gather all outgoing edges for batch prediction
+            outgoing_edges = []
+            for _, neighbor, key, edata in G.out_edges(current, keys=True, data=True):
+                edge_key = (current, neighbor, key)
+                if edge_key not in local_edge_cache:
+                    outgoing_edges.append((current, neighbor, key, edata))
+            
+            # Batch predict edge weights if we have edges to process
+            if outgoing_edges:
+                # Process in batches to avoid memory issues
+                for i in range(0, len(outgoing_edges), batch_size):
+                    batch = outgoing_edges[i:i + batch_size]
+                    batch_results = weight_fn._batch_predict_edges(batch)
+                    local_edge_cache.update(batch_results)
+            
+            # Process each neighbor
+            for _, neighbor, key, edata in G.out_edges(current, keys=True, data=True):
+                edge_key = (current, neighbor, key)
+                weight = local_edge_cache.get(edge_key)
+                
+                if weight is None:
+                    # Fallback to single edge prediction
+                    weight = weight_fn(current, neighbor, edata)
+                    local_edge_cache[edge_key] = weight
+                
+                tentative_g_score = g_score[current] + weight
+                
+                if tentative_g_score < g_score.get(neighbor, float('inf')):
+                    # This path to neighbor is better than any previous one
+                    came_from[neighbor] = current
+                    g_score[neighbor] = tentative_g_score
+                    f_score[neighbor] = tentative_g_score + h(neighbor, destination)
+                    
+                    if neighbor not in open_set_nodes:
+                        heapq.heappush(open_set, (f_score[neighbor], neighbor))
+                        open_set_nodes.add(neighbor)
+        
+        # No path found
+        raise nx.NetworkXNoPath(f"No path from {origin} to {destination}")
+
     def find_energy_optimal_path(
         self,
         G: nx.MultiDiGraph,
@@ -375,9 +838,25 @@ class SegmentEnergyRouter:
     ) -> List[Any]:
         algo = (algorithm or OPTIMIZATION_CONFIG.get("route_optimization_algorithm", "dijkstra")).lower()
         info(f"find_energy_optimal_path using {algo}", "optimization")
-        if algo == "astar":
+        
+        if algo == "dijkstra":
+            return self.shortest_path_by_energy(G, origin, destination, vehicle_context, driver_context, weather_context, departure_time, shared_cache=shared_cache)
+        
+        elif algo == "astar":
+            # Use original NetworkX A* implementation
             return self.a_star_path_by_energy(G, origin, destination, vehicle_context, driver_context, weather_context, departure_time, shared_cache=shared_cache)
-        return self.shortest_path_by_energy(G, origin, destination, vehicle_context, driver_context, weather_context, departure_time, shared_cache=shared_cache)
+        
+        elif algo == "custom_astar":
+            # Use our optimized custom A* with batched predictions
+            try:
+                return self.custom_astar_batched(G, origin, destination, vehicle_context, driver_context, weather_context, departure_time, shared_cache=shared_cache)
+            except Exception as e:
+                warning(f"Custom A* failed, falling back to NetworkX A*: {e}", "optimization")
+                return self.a_star_path_by_energy(G, origin, destination, vehicle_context, driver_context, weather_context, departure_time, shared_cache=shared_cache)
+        
+        else:
+            warning(f"Unknown algorithm '{algo}', falling back to Dijkstra", "optimization")
+            return self.shortest_path_by_energy(G, origin, destination, vehicle_context, driver_context, weather_context, departure_time, shared_cache=shared_cache)
 
     def validate_path_with_physics(
         self,
