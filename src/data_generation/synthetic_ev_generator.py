@@ -18,6 +18,7 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from config.ev_config import *
 from config.logging_config import *
+from config.driver_profiles import DRIVER_PROFILES
 from src.data_processing.openchargemap_api2 import ChargingInfrastructureManager
 from dotenv import load_dotenv
 from src.data_generation.road_network_db import NetworkDatabase
