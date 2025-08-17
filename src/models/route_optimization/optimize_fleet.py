@@ -209,7 +209,7 @@ def optimize_fleet_day(
     seg_router = SegmentEnergyRouter()
     soc_router = SOCResourceRouter()
     algo = (algorithm or OPTIMIZATION_CONFIG.get('route_optimization_algorithm', 'dijkstra')).lower()
-    # Load combined charging infrastructure once for the day
+    # Load combined charging infrastructure once for the dayc
     stations_df = None
     try:
         cim = ChargingInfrastructureManager()
@@ -666,7 +666,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Optimize fleet routes with ML energy-aware routing")
     parser.add_argument('--data-dir', type=str, default="data/synthetic")
     parser.add_argument('--output-dir', type=str, default="data/analysis/optimized")
-    parser.add_argument('--algorithm', type=str, choices=['astar', 'dijkstra'], default=None)
+    parser.add_argument('--algorithm', type=str, choices=['dijkstra', 'astar', 'custom_astar'], default=None, 
+                       help='Routing algorithm: dijkstra (simple), astar (NetworkX), or custom_astar (optimized)')
     parser.add_argument('--soc-planning', action='store_true', help='Enable SOC-aware routing')
     parser.add_argument('--no-physics', action='store_true', help='Disable per-trip physics validation')
     parser.add_argument('--sample-frac', type=float, default=None, help='Sample fraction of trips per day (0-1)')
