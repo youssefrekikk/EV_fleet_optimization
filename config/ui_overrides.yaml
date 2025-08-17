@@ -1,0 +1,61 @@
+charging:
+  charging_efficiency: 0.9
+  enable_home_charging: true
+  home_charging_availability: 0.8
+  home_charging_power: 7.4
+  public_fast_charging_power: 150.0
+driver_profiles_proportion:
+  casual: 0.2
+  commuter: 0.35
+  delivery: 0.2
+  rideshare: 0.25
+ev_models_market_share:
+  audi_a6_e_tron: 0.02
+  audi_e_tron_gt: 0.03
+  audi_q8_e_tron: 0.02
+  chevy_bolt: 0.09
+  ford_mustang_mach_e: 0.08
+  hyundai_ioniq_5: 0.07
+  kia_ev6: 0.05
+  nio_et5: 0.03
+  nissan_leaf: 0.1
+  renault_zoe: 0.05
+  tesla_model_3: 0.21
+  tesla_model_y: 0.18
+  volkswagen_id4: 0.07
+fleet:
+  fleet_size: 10
+  region: bay_area
+  simulation_days: 7
+optimization:
+  charging:
+    battery_buffer_percentage:
+      value: 0.15
+    max_detour_for_charging_km:
+      value: 5.0
+    price_weight_kwh_per_usd:
+      value: 1.5
+  evaluation:
+    fleet_eval_max_days:
+      value: 2
+    fleet_eval_trip_sample_frac:
+      value: 0.7
+  planning:
+    horizon_trips:
+      value: 1
+    planning_mode:
+      value: rolling_horizon
+    reserve_soc:
+      value: 0.15
+  routing:
+    algorithm:
+      value: astar
+    gamma_time_weight:
+      value: 0.03
+  soc_routing:
+    alpha_usd_per_hour:
+      value: 20.0
+    beta_kwh_to_usd:
+      value: 0.15
+    soc_objective:
+      value: cost

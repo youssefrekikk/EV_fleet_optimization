@@ -122,15 +122,122 @@ class TaskManager:
         while True:
             try:
                 task_id, task_info = self.task_queue.get(timeout=1)
-                # Don't mark as completed here - let the actual ML service do it
-                # Just update status to show it's being processed
+                
+                # Update status to show it's being processed
                 self.update_task(task_id, status="processing", message="Task queued for processing")
+                
+                # Execute the actual task based on type
+                task_type = task_info.get("type")
+                
+                if task_type == "data_generation":
+                    self._execute_data_generation_task(task_id, task_info)
+                elif task_type == "network_build":
+                    self._execute_network_build_task(task_id, task_info)
+                elif task_type == "optimization":
+                    self._execute_optimization_task(task_id, task_info)
+                else:
+                    # Don't mark as completed here - let the actual ML service do it
+                    self.update_task(task_id, status="processing", message="Task queued for processing")
                 
             except queue.Empty:
                 continue
             except Exception as e:
                 if 'task_id' in locals():
                     self.complete_task(task_id, error=str(e))
+    
+    def _execute_data_generation_task(self, task_id: str, task_info: Dict[str, Any]):
+        """Execute data generation task."""
+        try:
+            from .generation_service import generate_synthetic_data
+            
+            params = task_info.get("params", {})
+            self.update_task(task_id, progress=10, message="Starting data generation...")
+            
+            # Extract parameters
+            fleet_size = params.get("fleet_size", 50)
+            simulation_days = params.get("simulation_days", 7)
+            start_date = params.get("start_date", "2024-01-01")
+            ev_models_market_share = params.get("ev_models_market_share")
+            driver_profiles_proportion = params.get("driver_profiles_proportion")
+            
+            self.update_task(task_id, progress=20, message="Initializing generator...")
+            
+            # Call the actual data generation function
+            result = generate_synthetic_data(
+                fleet_size=fleet_size,
+                simulation_days=simulation_days,
+                start_date=start_date,
+                ev_models_market_share=ev_models_market_share,
+                driver_profiles_proportion=driver_profiles_proportion
+            )
+            
+            self.update_task(task_id, progress=100, message="Data generation completed!")
+            self.complete_task(task_id, result=result)
+            
+        except Exception as e:
+            self.complete_task(task_id, error=str(e))
+    
+    def _execute_network_build_task(self, task_id: str, task_info: Dict[str, Any]):
+        """Execute network build task."""
+        try:
+            from ..services.network_service import build_or_load_network
+            
+            self.update_task(task_id, progress=10, message="Starting network build...")
+            
+            # Call the network build function
+            result = build_or_load_network()
+            
+            self.update_task(task_id, progress=100, message="Network build completed!")
+            self.complete_task(task_id, result=result)
+            
+        except Exception as e:
+            self.complete_task(task_id, error=str(e))
+    
+    def _execute_optimization_task(self, task_id: str, task_info: Dict[str, Any]):
+        """Execute optimization task."""
+        try:
+            from .opt_service import run_optimization
+            
+            params = task_info.get("params", {})
+            self.update_task(task_id, progress=10, message="Starting optimization...")
+            
+            # Extract optimization parameters
+            routes_csv = params.get("routes_csv")
+            fleet_csv = params.get("fleet_csv") 
+            weather_csv = params.get("weather_csv")
+            
+            # Build optimization config from individual parameters
+            optimization_config = {
+                "algorithm": params.get("algorithm", "dijkstra"),
+                "gamma_time_weight": params.get("gamma_time_weight", 0.5),
+                "price_weight": params.get("price_weight", 1.0),
+                "battery_buffer": params.get("battery_buffer", 0.15),
+                "max_detour": params.get("max_detour", 5.0),
+                "planning_mode": params.get("planning_mode", "single_trip"),
+                "soc_objective": params.get("soc_objective", "balanced"),
+                "reserve_soc": params.get("reserve_soc", 0.2),
+                "horizon_trips": params.get("horizon_trips", 1),
+                "eval_max_days": params.get("eval_max_days", 7),
+                "trip_sample_frac": params.get("trip_sample_frac", 1.0)
+            }
+            
+            self.update_task(task_id, progress=20, message="Loading data and running optimization...")
+            
+            # Call the actual optimization function with correct parameters
+            result = run_optimization(
+                routes_csv=routes_csv,
+                fleet_csv=fleet_csv,
+                weather_csv=weather_csv,
+                date="2024-01-01",  # Default date, could be made configurable
+                algorithm=optimization_config.get("algorithm", "dijkstra"),
+                soc_planning=True  # Enable SOC planning
+            )
+            
+            self.update_task(task_id, progress=100, message="Optimization completed!")
+            self.complete_task(task_id, result=result)
+            
+        except Exception as e:
+            self.complete_task(task_id, error=str(e))
 
 # Global task manager instance
 task_manager = TaskManager()

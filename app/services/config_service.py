@@ -24,50 +24,117 @@ class ChargingConfigSchema(BaseModel):
     charging_efficiency: confloat(ge=0.6, le=1.0) = 0.9
 
 
-class OptimizationConfigSchema(BaseModel):
-    route_optimization_algorithm: str = Field("dijkstra")  # or 'astar'
-    gamma_time_weight: confloat(ge=0, le=1) = 0.02
-    price_weight_kwh_per_usd: confloat(ge=0, le=10) = 0.0
-    battery_buffer_percentage: confloat(ge=0.05, le=0.5) = 0.15
-    max_detour_for_charging_km: confloat(ge=0, le=50) = 5.0
-    # Fleet evaluation
-    fleet_eval_max_days: int | None = None
-    fleet_eval_trip_sample_frac: confloat(ge=0, le=1) | None = 0.7
-    # SOC routing objective
-    soc_objective: str = Field("energy")
-    alpha_usd_per_hour: confloat(ge=0, le=200) = 0.0
-    beta_kwh_to_usd: confloat(ge=0, le=5) = 0.0
-    planning_mode: str = Field("myopic")
-    reserve_soc: confloat(ge=0.0, le=0.95) = 0.15
-    reserve_kwh: confloat(ge=0.0, le=200.0) = 0.0
-    horizon_trips: conint(ge=0, le=10) = 1
-    horizon_hours: confloat(ge=0.0, le=72.0) = 0.0
+class PhysicsConfigSchema(BaseModel):
+    # Core physics constants (exactly matching PHYSICS_CONSTANTS)
+    air_density: confloat(ge=0.5, le=2.0) = 1.225
+    rolling_resistance: confloat(ge=0.005, le=0.02) = 0.008
+    gravity: confloat(ge=9.0, le=10.0) = 9.81
+    regen_efficiency: confloat(ge=0.5, le=0.95) = 0.8
+    motor_efficiency: confloat(ge=0.7, le=0.98) = 0.9
+    battery_efficiency: confloat(ge=0.8, le=0.99) = 0.95
+    hvac_base_power: confloat(ge=0.5, le=5.0) = 2.0
+    auxiliary_power: confloat(ge=0.1, le=1.0) = 0.25
+    auxiliary_usage_factor: confloat(ge=0.1, le=1.0) = 0.5
+    
+    # Advanced physics constants
+    gas_constant: confloat(ge=8.0, le=9.0) = 8.314
+    activation_energy: confloat(ge=15000.0, le=25000.0) = 20000.0
+    reference_temp_k: confloat(ge=270.0, le=310.0) = 298.15
+    temp_capacity_alpha: confloat(ge=0.1, le=1.0) = 0.5
+    inverter_efficiency: confloat(ge=0.9, le=0.99) = 0.95
+    transmission_efficiency: confloat(ge=0.95, le=0.99) = 0.98
+    
+    # HVAC model parameters
+    hvac_cop_heat_pump: confloat(ge=2.0, le=4.0) = 3.0
+    hvac_cop_resistive: confloat(ge=0.8, le=1.2) = 1.0
+    cabin_thermal_mass: confloat(ge=30000.0, le=70000.0) = 50000.0
+    cabin_heat_loss_coeff: confloat(ge=50.0, le=150.0) = 100.0
+    target_cabin_temp: confloat(ge=18.0, le=25.0) = 21.0
+    
+    # Rolling resistance factors
+    rolling_resistance_speed_factor: confloat(ge=0.1, le=0.2) = 0.15
+    rolling_resistance_cold_factor: confloat(ge=1.1, le=1.2) = 1.15
+    rolling_resistance_hot_factor: confloat(ge=1.0, le=1.1) = 1.05
+    rolling_resistance_rain_factor: confloat(ge=1.15, le=1.25) = 1.2
+    
+    # Air density factors
+    humidity_density_factor: confloat(ge=0.3, le=0.5) = 0.378
+    
+    # Regenerative braking parameters
+    regen_speed_threshold: confloat(ge=5.0, le=25.0) = 15.0
+    regen_hard_braking_threshold: confloat(ge=1.0, le=5.0) = 3.0
+    regen_moderate_braking_threshold: confloat(ge=0.5, le=3.0) = 1.5
+    regen_hard_braking_efficiency: confloat(ge=0.3, le=0.8) = 0.6
+    regen_moderate_braking_efficiency: confloat(ge=0.7, le=0.95) = 0.85
+    
+    # Minimum consumption parameters
+    min_consumption_per_km: confloat(ge=0.01, le=0.05) = 0.02
+    min_driving_time_hours: confloat(ge=0.1, le=1.0) = 0.5
 
-    @validator("route_optimization_algorithm")
-    def _algo_choice(cls, v: str) -> str:
-        if v not in {"dijkstra", "astar"}:
-            raise ValueError("route_optimization_algorithm must be 'dijkstra' or 'astar'")
-        return v
 
-    @validator("soc_objective")
-    def _soc_choice(cls, v: str) -> str:
-        if v not in {"energy", "cost", "time", "weighted"}:
-            raise ValueError("soc_objective must be one of: energy, cost, time, weighted")
-        return v
+class DriverProfilesConfigSchema(BaseModel):
+    # Driver profile proportions (must sum to 1.0)
+    commuter_proportion: confloat(ge=0.0, le=1.0) = 0.35
+    rideshare_proportion: confloat(ge=0.0, le=1.0) = 0.25
+    delivery_proportion: confloat(ge=0.0, le=1.0) = 0.20
+    casual_proportion: confloat(ge=0.0, le=1.0) = 0.20
+    
+    # Commuter profile parameters
+    commuter_daily_km_min: conint(ge=30, le=200) = 65
+    commuter_daily_km_max: conint(ge=50, le=300) = 130
+    commuter_trips_per_day_min: conint(ge=1, le=10) = 2
+    commuter_trips_per_day_max: conint(ge=2, le=15) = 4
+    commuter_avg_speed_city: conint(ge=15, le=50) = 25
+    commuter_avg_speed_highway: conint(ge=60, le=120) = 90
+    commuter_home_charging_prob: confloat(ge=0.0, le=1.0) = 0.9
+    commuter_charging_threshold: confloat(ge=0.1, le=0.8) = 0.3
+    commuter_weekend_factor: confloat(ge=0.1, le=2.0) = 0.3
+    
+    # Rideshare profile parameters
+    rideshare_daily_km_min: conint(ge=100, le=500) = 160
+    rideshare_daily_km_max: conint(ge=200, le=800) = 320
+    rideshare_trips_per_day_min: conint(ge=10, le=50) = 15
+    rideshare_trips_per_day_max: conint(ge=20, le=80) = 25
+    rideshare_avg_speed_city: conint(ge=15, le=50) = 22
+    rideshare_avg_speed_highway: conint(ge=60, le=120) = 85
+    rideshare_home_charging_prob: confloat(ge=0.0, le=1.0) = 0.6
+    rideshare_charging_threshold: confloat(ge=0.1, le=0.8) = 0.2
+    rideshare_weekend_factor: confloat(ge=0.1, le=2.0) = 1.2
+    
+    # Delivery profile parameters
+    delivery_daily_km_min: conint(ge=150, le=800) = 240
+    delivery_daily_km_max: conint(ge=300, le=1000) = 480
+    delivery_trips_per_day_min: conint(ge=15, le=80) = 20
+    delivery_trips_per_day_max: conint(ge=25, le=100) = 40
+    delivery_avg_speed_city: conint(ge=15, le=50) = 20
+    delivery_avg_speed_highway: conint(ge=60, le=120) = 80
+    delivery_home_charging_prob: confloat(ge=0.0, le=1.0) = 0.3
+    delivery_charging_threshold: confloat(ge=0.1, le=0.8) = 0.25
+    delivery_weekend_factor: confloat(ge=0.1, le=2.0) = 0.8
+    
+    # Casual profile parameters
+    casual_daily_km_min: conint(ge=10, le=150) = 30
+    casual_daily_km_max: conint(ge=20, le=300) = 100
+    casual_trips_per_day_min: conint(ge=1, le=8) = 1
+    casual_trips_per_day_max: conint(ge=2, le=12) = 3
+    casual_avg_speed_city: conint(ge=15, le=50) = 30
+    casual_avg_speed_highway: conint(ge=60, le=120) = 95
+    casual_home_charging_prob: confloat(ge=0.0, le=1.0) = 0.95
+    casual_charging_threshold: confloat(ge=0.1, le=0.8) = 0.4
+    casual_weekend_factor: confloat(ge=0.1, le=2.0) = 1.5
 
-    @validator("planning_mode")
-    def _planning_choice(cls, v: str) -> str:
-        if v not in {"myopic", "next_trip", "rolling_horizon"}:
-            raise ValueError("planning_mode must be one of: myopic, next_trip, rolling_horizon")
-        return v
+
+
 
 
 class UIOverrides(BaseModel):
     fleet: FleetConfigSchema = FleetConfigSchema()
     charging: ChargingConfigSchema = ChargingConfigSchema()
-    optimization: OptimizationConfigSchema = OptimizationConfigSchema()
+    physics: PhysicsConfigSchema = PhysicsConfigSchema()
+    driver_profiles: DriverProfilesConfigSchema = DriverProfilesConfigSchema()
     # Optional distributions to override EV models and driver profiles
     ev_models_market_share: Dict[str, float] | None = None
+    ev_models_parameters: Dict[str, Dict[str, Any]] | None = None
     driver_profiles_proportion: Dict[str, float] | None = None
 
 
@@ -89,13 +156,16 @@ def merged_runtime_config() -> Dict[str, Any]:
         FLEET_CONFIG as FLEET_DEFAULT,
         CHARGING_CONFIG as CHARGING_DEFAULT,
     )
-    from config.optimization_config import OPTIMIZATION_CONFIG as OPT_DEFAULT
+    from config.physics_constants import PHYSICS_CONSTANTS
 
     ui = load_overrides()
 
     fleet = {**FLEET_DEFAULT, **ui.fleet.dict()}
     charging = {**CHARGING_DEFAULT, **ui.charging.dict()}
-    optimization = {**OPT_DEFAULT, **ui.optimization.dict()}
+    physics = {**PHYSICS_CONSTANTS, **ui.physics.dict()}
+
+    # Use driver profile proportions directly
+    driver_proportions = {k.replace('_proportion', ''): float(v) for k, v in ui.driver_profiles.dict().items()}
 
     # Apply optional distributions to runtime (not mutating code files)
     ev_shares = (ui.ev_models_market_share or {}).copy()
@@ -107,17 +177,16 @@ def merged_runtime_config() -> Dict[str, Any]:
         totalp = sum(driver_props.values()) or 1.0
         driver_props = {k: float(v) / totalp for k, v in driver_props.items()}
 
+    # Apply EV model parameter overrides
+    ev_params = (ui.ev_models_parameters or {}).copy()
+    
     return {
         "fleet": fleet,
         "charging": charging,
-        "optimization": optimization,
+        "physics": physics,
+        "driver_profiles_proportion": driver_proportions,
         "ev_models_market_share": ev_shares or None,
-        "driver_profiles_proportion": driver_props or None,
-    }
-
-    return {
-        "fleet": fleet,
-        "charging": charging,
-        "optimization": optimization,
+        "ev_models_parameters": ev_params or None,
+        "driver_profiles_proportion_override": driver_props or None,
     }
 

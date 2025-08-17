@@ -79,7 +79,7 @@ with st.form("training_form"):
     with col1:
         model_choice = st.selectbox(
             "Model Type",
-            ["random_forest", "gradient_boosting", "xgboost", "lightgbm", "catboost"],
+            ["random_forest", "gradient_boosting", "xgboost","xgboost_optuna", "lightgbm", "catboost","all"],
             help="Choose the ML algorithm to train"
         )
     

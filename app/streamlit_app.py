@@ -1,7 +1,7 @@
 import os, sys
 import json
 from pathlib import Path
-
+import base64
 import streamlit as st
 
 # Add project root to path for imports
@@ -13,6 +13,42 @@ for p in [APP_DIR, PROJECT_ROOT]:
         sys.path.insert(0, p)
 
 from services.task_manager import task_manager
+from services.data_service import data_service
+from services.cache_manager import cache_manager
+from services.async_task_service import async_task_service
+
+
+with open("app/pictures/San_Francisco.jpg", "rb") as f:
+    img = base64.b64encode(f.read()).decode()
+page_bg_img = f"""
+<style>
+[data-testid="stAppViewContainer"] {{
+    background: url("data:image/jpg;base64,{img}") no-repeat center center fixed;
+    background-size: cover;
+    position: relative;
+}}
+
+[data-testid="stAppViewContainer"]::before {{
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0,0,0,0.45); /* 👈 overlay darkness */
+    z-index: 0;
+}}
+
+.block-container {{
+    position: relative;
+    z-index: 1; /* makes sure content is above overlay */
+    color: #f5f5f5; /* soft white text */
+}}
+</style>
+"""
+st.markdown(page_bg_img, unsafe_allow_html=True)
+
+
 
 st.set_page_config(
     page_title="EV Fleet Optimization Studio",
@@ -21,16 +57,32 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+image_path = os.path.join(CURRENT_DIR, 'pictures', 'San_Francisco.jpg')
+
+
+
 # Custom CSS for futuristic Bay Area theme
 css = """
 <style>
-.main .block-container {padding-top: 1rem;}
+
+/* Remove gradient text */
+.hero h1 {
+    background: none !important;
+    -webkit-background-clip: unset !important;
+    -webkit-text-fill-color: black !important;
+    text-shadow: none !important;
+}
+
+/* Buttons text black */
+.stButton > button {
+    color: black !important;
+}
 
 /* Futuristic Bay Area Theme */
 .hero {
     border-radius: 20px; 
     padding: 2rem 2.5rem; 
-    background: linear-gradient(135deg, #0d1b2a 0%, #1b263b 25%, #2d3748 50%, #4a5568 75%, #718096 100%);
+    background-image: url("app/pictures/San_Francisco.jpg");
     color: #e6f1ff; 
     border: 2px solid rgba(0, 255, 166, 0.3);
     box-shadow: 0 8px 32px rgba(0, 255, 166, 0.1);
@@ -171,6 +223,20 @@ css = """
     border-radius: 8px;
 }
 
+/* Performance indicators */
+.performance-indicator {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-left: 8px;
+}
+
+.performance-fast { background: rgba(0, 255, 166, 0.2); color: #00ffa6; }
+.performance-medium { background: rgba(255, 193, 7, 0.2); color: #ffc107; }
+.performance-slow { background: rgba(255, 107, 107, 0.2); color: #ff6b6b; }
+
 /* Global training status indicator */
 .training-status {
     position: fixed;
@@ -191,12 +257,27 @@ css = """
     50% { transform: scale(1.05); }
     100% { transform: scale(1); }
 }
+
+/* Loading animations */
+.loading-spinner {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 3px solid rgba(0, 255, 166, 0.3);
+    border-radius: 50%;
+    border-top-color: #00ffa6;
+    animation: spin 1s ease-in-out infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
 </style>
 """
 
 st.markdown(css, unsafe_allow_html=True)
 
-# Performance optimizations
+# Performance optimizations with new caching
 @st.cache_data(ttl=300)  # Cache for 5 minutes
 def get_cached_running_tasks():
     """Cache running tasks to avoid repeated calls."""
@@ -214,6 +295,22 @@ def get_cached_analysis_files():
         recent_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
         return recent_files
     return []
+
+@st.cache_data(ttl=1800)  # Cache for 30 minutes
+def get_cached_dataset_stats():
+    """Cache dataset statistics."""
+    try:
+        return data_service.get_dataset_stats()
+    except Exception as e:
+        return {"error": str(e)}
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def get_cached_cache_stats():
+    """Cache cache manager statistics."""
+    try:
+        return cache_manager.get_stats()
+    except Exception as e:
+        return {"error": str(e)}
 
 # Global training status indicator
 running_tasks = get_cached_running_tasks()
@@ -241,25 +338,87 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# Performance Overview
+st.subheader("🚀 Performance Overview")
+
+# Get cached statistics
+dataset_stats = get_cached_dataset_stats()
+cache_stats = get_cached_cache_stats()
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    if "error" not in dataset_stats:
+        st.metric(
+            "Dataset Size", 
+            f"{dataset_stats.get('total_size_mb', 0):.1f} MB",
+            delta="Optimized"
+        )
+    else:
+        st.metric("Dataset Size", "N/A", delta="Error")
+
+with col2:
+    if "error" not in cache_stats:
+        try:
+            memory_usage = cache_stats.get('memory_usage_mb', 0)
+            memory_limit = cache_stats.get('memory_limit_mb', 1024)
+            
+            # Handle pandas Series
+            if hasattr(memory_usage, 'sum'):
+                memory_usage = float(memory_usage.sum())
+            else:
+                memory_usage = float(memory_usage)
+                
+            if hasattr(memory_limit, 'sum'):
+                memory_limit = float(memory_limit.sum())
+            else:
+                memory_limit = float(memory_limit)
+                
+            st.metric(
+                "Cache Memory", 
+                f"{memory_usage:.1f} MB",
+                delta=f"{memory_usage/memory_limit*100:.1f}% used"
+            )
+        except Exception as e:
+            st.metric("Cache Memory", "Error", delta=str(e)[:20])
+    else:
+        st.metric("Cache Memory", "N/A", delta="Error")
+
+with col3:
+    if "error" not in dataset_stats:
+        fleet_size = dataset_stats.get('fleet_size', 0)
+        st.metric("Fleet Size", fleet_size, delta="Active")
+    else:
+        st.metric("Fleet Size", "N/A", delta="Error")
+
+with col4:
+    if "error" not in cache_stats:
+        cache_items = cache_stats.get('total_items', 0)
+        st.metric("Cache Items", cache_items, delta="Cached")
+    else:
+        st.metric("Cache Items", "N/A", delta="Error")
+
 # Workflow Explanation
 st.markdown("""
 <div class="glass-card">
     <h3>🚀 Workflow Overview</h3>
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; margin-top: 1rem;">
         <div style="background: rgba(0, 255, 166, 0.1); padding: 1rem; border-radius: 8px;">
-            <h4>1. 📊 Data Generation</h4>
-            <p>Create synthetic EV fleet data with realistic Bay Area patterns</p>
+            <h4>1. 📊 Data Generation </h4>
+            <p> We build a road network graph from OpenStreetMap (OSM), where intersections are nodes and road segments are edges. Public charging stations from the Open Charge Map API and synthetic home chargers are added for realism. On this network, we simulate EV fleets with physics-based models, assigning each vehicle traits like battery size, charging rate, and driving style to capture diverse usage patterns at scale. </p>
         </div>
         <div style="background: rgba(0, 212, 255, 0.1); padding: 1rem; border-radius: 8px;">
-            <h4>2. 🤖 Model Training</h4>
-            <p>Train ML models to predict energy consumption per road segment</p>
+            <h4>2. 🤖 Model Training </h4>
+            <p>From the synthetic driving data, we train machine learning models to predict the energy use of EVs on each road segment. Features such as road type, speed limit, traffic, and weather feed into a regression-based model that outputs the predicted kWh per segment. This segment-level approach captures local variations, enabling accurate energy forecasting across the full network.
+            </p>
         </div>
         <div style="background: rgba(255, 193, 7, 0.1); padding: 1rem; border-radius: 8px;">
-            <h4>3. 🛰️ Route Optimization</h4>
-            <p>Find energy-optimal routes using trained models</p>
+            <h4>3. 🛰️ Route Optimization </h4>
+            <p>Using predicted segment energies, we compute energy-aware routes with algorithms like Dijkstra and A*. To account for EV limits, we extend routing with state-of-charge (SOC) planning, balancing energy, time, and charging stops. At the fleet level, we optimize across many vehicles, integrating factors like traffic, weather, and vehicle specs. Techniques such as linear and dynamic programming enable scalable, efficient fleet routing and charging schedules.
+            </p>
         </div>
         <div style="background: rgba(156, 39, 176, 0.1); padding: 1rem; border-radius: 8px;">
-            <h4>4. 📈 Analytics</h4>
+            <h4>4. 📈 Analytics </h4>
             <p>Visualize results and analyze fleet performance</p>
         </div>
     </div>
@@ -307,6 +466,34 @@ if analysis_files:
 else:
     st.info("No analysis results found yet. Start by generating data and training models!")
 
+# System Performance
+with st.expander("⚡ System Performance", expanded=False):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Cache Performance**")
+        if "error" not in cache_stats:
+            cache_usage = cache_stats.get('memory_usage_mb', 0)
+            cache_limit = cache_stats.get('memory_limit_mb', 1024)
+            cache_percent = (cache_usage / cache_limit) * 100
+            
+            st.progress(cache_percent / 100)
+            st.write(f"Memory Usage: {cache_usage:.1f} MB / {cache_limit} MB ({cache_percent:.1f}%)")
+            st.write(f"Cached Items: {cache_stats.get('total_items', 0)}")
+            st.write(f"Disk Files: {cache_stats.get('disk_files', 0)}")
+        else:
+            st.error(f"Cache Error: {cache_stats['error']}")
+    
+    with col2:
+        st.markdown("**Data Performance**")
+        if "error" not in dataset_stats:
+            st.write(f"Total Files: {dataset_stats.get('total_files', 0)}")
+            st.write(f"Total Size: {dataset_stats.get('total_size_mb', 0):.1f} MB")
+            st.write(f"Available Dates: {len(dataset_stats.get('available_dates', []))}")
+            st.write(f"Fleet Size: {dataset_stats.get('fleet_size', 0)}")
+        else:
+            st.error(f"Data Error: {dataset_stats['error']}")
+
 # Configuration Overview
 with st.expander("⚙️ Configuration Overview", expanded=False):
     st.markdown("""
@@ -336,6 +523,7 @@ with st.expander("🚀 Quick Start Guide", expanded=False):
             <li><strong>Optimize Routes:</strong> Run energy-aware route optimization</li>
         </ol>
         <p><strong>⚡ Performance Tip:</strong> Start with small fleet sizes (10-20 vehicles) for testing, then scale up.</p>
+        <p><strong>🔧 Architecture:</strong> This system uses advanced caching, chunked data processing, and async task management for optimal performance.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -344,7 +532,7 @@ st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #a0aec0; padding: 1rem;">
     <p>⚡ EV Fleet Optimization Studio • Powered by Machine Learning • San Francisco Bay Area</p>
-    <p><small>Built with Streamlit • Advanced Energy Modeling • Route Optimization</small></p>
+    <p><small>Built with Streamlit • Advanced Energy Modeling • Route Optimization • High-Performance Architecture</small></p>
 </div>
 """, unsafe_allow_html=True)
 

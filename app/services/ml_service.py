@@ -132,8 +132,62 @@ def train_model(data_dir: str, model_choice: str = "random_forest", task_id: str
         
         # Train models
         try:
-            results = pred.train_models(X, y, X, y)
+            trained_models = {}
+
+            if model_choice == "random_forest":
+                model = pred.tune_random_forest(X, y)
+                pred.print_model_metrics(model, X, y, "Random Forest")
+                trained_models["Random Forest"] = model
+
+            elif model_choice == "xgboost":
+                model = pred.tune_xgboost(X, y)
+                pred.print_model_metrics(model, X, y, "XGBoost (RandomSearch)")
+                trained_models["XGBoost"] = model
+
+            elif model_choice == "xgboost_optuna":
+                model = pred.tune_xgboost_optuna(X, y, n_trials=100, timeout=600)
+                pred.print_model_metrics(model, X, y, "XGBoost Optuna")
+                trained_models["XGBoost Optuna"] = model
+
+            elif model_choice == "gradient_boosting":
+                model = pred.tune_gradient_boosting(X, y)
+                pred.print_model_metrics(model, X, y, "Gradient Boosting")
+                trained_models["Gradient Boosting"] = model
+
+            elif model_choice == "lightgbm":
+                model = pred.tune_lightgbm(X, y)
+                pred.print_model_metrics(model, X, y, "LightGBM")
+                trained_models["LightGBM"] = model
+
+            elif model_choice == "catboost":
+                model = pred.tune_catboost(X, y)
+                pred.print_model_metrics(model, X, y, "CatBoost")
+                trained_models["CatBoost"] = model
+
+            elif model_choice == "all":
+                # Run all tuned models
+                trained_models["Random Forest"] = pred.tune_random_forest(X, y)
+                pred.print_model_metrics(trained_models["Random Forest"], X, y, "Random Forest")
+
+                trained_models["Gradient Boosting"] = pred.tune_gradient_boosting(X, y)
+                pred.print_model_metrics(trained_models["Gradient Boosting"], X, y, "Gradient Boosting")
+
+                trained_models["XGBoost (RandomSearch)"] = pred.tune_xgboost(X, y)
+                pred.print_model_metrics(trained_models["XGBoost (RandomSearch)"], X, y, "XGBoost (RandomSearch)")
+
+                trained_models["XGBoost Optuna"] = pred.tune_xgboost_optuna(X, y, n_trials=200, timeout=600)
+                pred.print_model_metrics(trained_models["XGBoost Optuna"], X, y, "XGBoost Optuna")
+
+                trained_models["LightGBM"] = pred.tune_lightgbm(X, y)
+                pred.print_model_metrics(trained_models["LightGBM"], X, y, "LightGBM")
+
+                trained_models["CatBoost"] = pred.tune_catboost(X, y)
+                pred.print_model_metrics(trained_models["CatBoost"], X, y, "CatBoost")
+
+            # Pick the best model
             best = pred.get_best_model()
+            print(f"Best model: {best}")
+
         except Exception as train_error:
             error_msg = f"Failed to train models: {str(train_error)}"
             if task_id:
@@ -145,7 +199,6 @@ def train_model(data_dir: str, model_choice: str = "random_forest", task_id: str
                 "columns": list(X.columns) if 'X' in locals() else None,
                 "train_error_details": str(train_error)
             }
-
         update_progress(80, "Saving model...")
         
         # Save model
