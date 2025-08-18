@@ -446,23 +446,7 @@ if analysis_files:
         else:
             st.metric("Active Tasks", 0)
     
-    # Show recent runs
-    st.write("**Recent Analysis Results:**")
-    for file in analysis_files[:5]:  # Show last 5
-        try:
-            with open(file, 'r') as f:
-                data = json.load(f)
-                status = data.get('status', 'unknown')
-                status_color = {
-                    'completed': '✅',
-                    'running': '🔄',
-                    'failed': '❌',
-                    'error': '❌'
-                }.get(status, '❓')
-                
-                st.write(f"{status_color} {file.name} - {status}")
-        except:
-            st.write(f"❓ {file.name} - Unable to read")
+   
 else:
     st.info("No analysis results found yet. Start by generating data and training models!")
 
