@@ -24,7 +24,7 @@ class OptimizationConfigService:
             "routing": {
                 "algorithm": {
                     "value": "astar",
-                    "options": ["dijkstra", "astar"],
+                    "options": ["dijkstra", "astar","custom_astar"],
                     "description": "Routing algorithm to use for pathfinding",
                     "help": "Dijkstra: Guaranteed optimal but slower. A*: Faster with admissible heuristic."
                 },
