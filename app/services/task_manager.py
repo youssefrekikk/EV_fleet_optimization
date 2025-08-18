@@ -18,6 +18,7 @@ class TaskManager:
         self.task_queue = queue.Queue()
         self.worker_thread = None
         self._load_status()
+        self.fix_stuck_tasks()
     
     def _load_status(self):
         """Load existing task status from file."""
@@ -87,6 +88,8 @@ class TaskManager:
         """Get current status of a task."""
         return self.tasks.get(task_id)
     
+    
+    
     def get_all_tasks(self) -> Dict[str, Dict[str, Any]]:
         """Get all tasks."""
         return self.tasks.copy()
@@ -101,7 +104,7 @@ class TaskManager:
         
         to_remove = []
         for task_id, task_info in self.tasks.items():
-            if task_info.get("status") in ["completed", "failed"]:
+            if task_info.get("status") in ["completed", "failed","stopped"]:
                 finished_at = task_info.get("finished_at")
                 if finished_at:
                     try:
@@ -115,6 +118,19 @@ class TaskManager:
             del self.tasks[task_id]
         
         if to_remove:
+            self._save_status()
+    
+    def fix_stuck_tasks(self):
+        """Mark previously running tasks as stopped if app restarted."""
+        stuck_states = ["running", "processing"]
+        changed = False
+        for task_id, task_info in self.tasks.items():
+            if task_info.get("status") in stuck_states:
+                task_info["status"] = "stopped"
+                task_info["finished_at"] = datetime.now().isoformat()
+                task_info["message"] = "Task stopped unexpectedly (app closed)"
+                changed = True
+        if changed:
             self._save_status()
     
     def _process_tasks(self):
