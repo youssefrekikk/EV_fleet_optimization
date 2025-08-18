@@ -14,7 +14,19 @@ from sklearn.preprocessing import OrdinalEncoder
 from sklearn.model_selection import RandomizedSearchCV
 import optuna
 optuna.logging.set_verbosity(optuna.logging.WARNING)
-from sklearn.utils import parallel_backend
+try:
+    from sklearn.utils import parallel_backend
+except ImportError:
+    try:
+        # For scikit-learn >= 1.3.0
+        from sklearn.utils.parallel_backend import parallel_backend
+    except ImportError:
+        # Fallback: create a dummy parallel_backend context manager
+        import contextlib
+        @contextlib.contextmanager
+        def parallel_backend(*args, **kwargs):
+            yield
+        print("Warning: parallel_backend not available, using dummy implementation")
 
 warnings.filterwarnings('ignore')
 #from lightgbm import LGBMRegressor
@@ -405,7 +417,11 @@ class SegmentEnergyPredictor:
         rf = RandomForestRegressor(random_state=42, n_jobs=-1)
         rs = RandomizedSearchCV(rf, param_distributions=param_dist, n_iter=30, cv=3,
                                 scoring='neg_root_mean_squared_error', n_jobs=-1, verbose=0)
-        with parallel_backend('threading'):
+        try:
+            with parallel_backend('threading'):
+                rs.fit(X_train, y_train)
+        except Exception:
+            # Fallback to regular fitting if parallel_backend fails
             rs.fit(X_train, y_train)
         self.models['random_forest_tuned'] = rs.best_estimator_
         self.logger.info(f"Best Random Forest params: {rs.best_params_}")
@@ -424,7 +440,11 @@ class SegmentEnergyPredictor:
         gb = GradientBoostingRegressor(random_state=42)
         rs = RandomizedSearchCV(gb, param_distributions=param_dist, n_iter=30, cv=3,
                                 scoring='neg_root_mean_squared_error', n_jobs=-1, verbose=0)
-        with parallel_backend('threading'):
+        try:
+            with parallel_backend('threading'):
+                rs.fit(X_train, y_train)
+        except Exception:
+            # Fallback to regular fitting if parallel_backend fails
             rs.fit(X_train, y_train)
         self.models['gradient_boosting_tuned'] = rs.best_estimator_
         self.logger.info(f"Best Gradient Boosting params: {rs.best_params_}")
@@ -447,7 +467,11 @@ class SegmentEnergyPredictor:
         lgbm = LGBMRegressor(random_state=42, n_jobs=-1)
         rs = RandomizedSearchCV(lgbm, param_distributions=param_dist, n_iter=30, cv=3,
                                 scoring='neg_root_mean_squared_error', n_jobs=-1, verbose=0)
-        with parallel_backend('threading'):
+        try:
+            with parallel_backend('threading'):
+                rs.fit(X_train, y_train)
+        except Exception:
+            # Fallback to regular fitting if parallel_backend fails
             rs.fit(X_train, y_train)
         self.models['lightgbm_tuned'] = rs.best_estimator_
         self.logger.info(f"Best LightGBM params: {rs.best_params_}")
@@ -467,7 +491,11 @@ class SegmentEnergyPredictor:
         cb = CatBoostRegressor(random_state=42, verbose=0)
         rs = RandomizedSearchCV(cb, param_distributions=param_dist, n_iter=30, cv=3,
                                 scoring='neg_root_mean_squared_error', n_jobs=-1, verbose=0)
-        with parallel_backend('threading'):
+        try:
+            with parallel_backend('threading'):
+                rs.fit(X_train, y_train)
+        except Exception:
+            # Fallback to regular fitting if parallel_backend fails
             rs.fit(X_train, y_train)
         self.models['catboost_tuned'] = rs.best_estimator_
         self.logger.info(f"Best CatBoost params: {rs.best_params_}")
