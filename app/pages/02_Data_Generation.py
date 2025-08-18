@@ -29,6 +29,47 @@ st.set_page_config(page_title="Data Generation", page_icon="🧪", layout="wide"
 st.title("🧪 Data Generation Studio")
 st.caption("Build the road network and generate synthetic datasets with high-performance processing")
 
+# Open Charge Map API Key Configuration
+st.subheader("🔌 Open Charge Map API Configuration") 
+with st.expander("API Key Configuration ", expanded=False):
+    st.info("""
+    💡 **Open Charge Map API Key Required**
+    
+    To generate realistic charging infrastructure data, you need an Open Charge Map API key.
+    
+    **Steps to get your API key:**
+    1. Visit: https://openchargemap.org/site/develop/api
+    2. Sign up for a free account
+    3. Generate your API key
+    4. Enter it below or set the environment variable `OPENCHARGEMAP_API_KEY`
+    """)
+    
+    # Check if API key is already set in environment
+    import os
+    env_api_key = os.getenv('OPENCHARGEMAP_API_KEY')
+    
+    if env_api_key:
+        st.success("✅ API key found in environment variables")
+        st.write(f"Key: {env_api_key[:8]}...{env_api_key[-4:]}")
+    else:
+        st.warning("⚠️ No API key found in environment variables")
+    
+    # User input for API key
+    user_api_key = st.text_input(
+        "Enter your Open Charge Map API key:",
+        type="password",
+        placeholder="Enter your API key here...",
+        help="Your API key will be used for this session only"
+    )
+    
+    if user_api_key:
+        st.session_state['openchargemap_api_key'] = user_api_key
+        st.success("✅ API key configured for this session")
+    elif env_api_key:
+        st.session_state['openchargemap_api_key'] = env_api_key
+    else:
+        st.error("❌ No API key provided. Charging infrastructure data will use synthetic data only.")
+
 # Performance indicator
 st.markdown("""
 <div style="background: rgba(0, 255, 166, 0.1); padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
