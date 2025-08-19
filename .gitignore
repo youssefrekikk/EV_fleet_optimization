@@ -8,6 +8,8 @@ data/processed/*.parquet
 *.xlsx
 *.json
 *.parquet
+#docs
+docs/
 
 # Large synthetic data files
 *SYNTHETIC*.csv

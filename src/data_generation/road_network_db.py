@@ -171,47 +171,11 @@ class NetworkDatabase:
         
         network = None
         
-        # Strategy 1: Larger Bay Area bounding box (most reliable)
-        try:
-            info("🌐 Trying comprehensive Bay Area bounding box...", 'road_network_db')
-            # Expanded Bay Area bounds to include all major cities
-            # [north, south, east, west] - covers SF to San Jose, Oakland to coast
-            bbox_bounds = (38.1, 37.1, -121.3, -123.0)  # Much larger area
-            
-            network = ox.graph_from_bbox(
-                bbox=bbox_bounds,
-                network_type='drive',
-                simplify=True,
-                retain_all=True,  # Keep all components initially
-                truncate_by_edge=True  # Better boundary handling
-            )
-            
-            if network and len(network.nodes) > 2000:
-                info(f"✅ Large Bay Area bbox successful: {len(network.nodes)} nodes", 'road_network_db')
-                
-                # Test connectivity immediately
-                test_locations = [
-                    (37.7749, -122.4194),  # San Francisco
-                    (37.8044, -122.2712),  # Oakland  
-                    (37.3382, -122.0922),  # San Jose
-                    (37.5485, -122.9886),  # Fremont
-                ]
-                
-                connectivity = self._quick_connectivity_test(network, test_locations)
-                info(f"📊 Bbox network connectivity: {connectivity:.2f}", 'road_network_db')
-                
-                if connectivity > 0.5:  # Good connectivity
-                    network = self._add_network_attributes(network)
-                    return self._enhance_network_connectivity(network)
-                else:
-                    warning("⚠️ Bbox network has poor connectivity", 'road_network_db')
-            else:
-                warning("⚠️ Bbox network too small", 'road_network_db')
-                network = None
-                
-        except Exception as e:
-            warning(f"❌ Large bbox failed: {e}", 'road_network_db')
-            network = None
+        # Strategy 1: Chunked bbox approach (splits large area)
+        network = self._create_chunked_bbox_network()
+        if network and len(network.nodes) > 10000:
+            info(f"✅ Chunked bbox successful: {len(network.nodes)} nodes", 'road_network_db')
+            return network
         
         # Strategy 2: Multiple overlapping city networks (merge approach)
         if network is None:
@@ -246,19 +210,106 @@ class NetworkDatabase:
             return network
         else:
             raise Exception("Failed to create any network - all strategies failed")
+    
+    def _create_chunked_bbox_network(self) -> nx.MultiDiGraph:
+        """Create network by splitting Bay Area into manageable chunks and merging"""
+        info("🧩 Creating chunked bbox network...", 'road_network_db')
+        
+        # Define smaller overlapping bbox chunks across Bay Area
+        # Each chunk is ~30km x 30km to stay within API limits
+        chunks = [
+            # North Bay
+            (38.1, 37.6, -122.8, -122.2, "North Bay"),
+            # San Francisco + Peninsula North  
+            (37.85, 37.4, -122.8, -122.0, "SF + North Peninsula"),
+            # Peninsula South + South Bay North
+            (37.6, 37.2, -122.4, -121.7, "South Peninsula + North SJ"),
+            # South Bay + East Bay South
+            (37.4, 37.0, -122.2, -121.5, "South Bay"),
+            # East Bay North
+            (37.95, 37.6, -122.4, -121.8, "North East Bay"),
+            # East Bay South + Fremont area
+            (37.7, 37.3, -122.2, -121.6, "South East Bay"),
+        ]
+        
+        merged_network = None
+        total_nodes = 0
+        successful_chunks = 0
+        
+        for i, (north, south, west, east, name) in enumerate(chunks):
+            try:
+                info(f"📍 Loading chunk {i+1}/{len(chunks)}: {name}", 'road_network_db')
+                
+                chunk_network = ox.graph_from_bbox(
+                    bbox=(north, south, east, west),
+                    network_type='drive',
+                    simplify=True,
+                    retain_all=True
+                )
+                
+                if chunk_network and len(chunk_network.nodes) > 100:
+                    info(f"  ✅ {name}: {len(chunk_network.nodes)} nodes", 'road_network_db')
+                    
+                    if merged_network is None:
+                        merged_network = chunk_network.copy()
+                    else:
+                        # Merge networks
+                        merged_network = nx.union(merged_network, chunk_network)
+                    
+                    total_nodes = len(merged_network.nodes)
+                    successful_chunks += 1
+                    
+                    info(f"  🔗 Total merged: {total_nodes} nodes ({successful_chunks} chunks)", 'road_network_db')
+                else:
+                    warning(f"  ⚠️ {name}: chunk too small or empty", 'road_network_db')
+                    
+            except Exception as e:
+                warning(f"  ❌ {name}: failed - {e}", 'road_network_db')
+                continue
+        
+        if merged_network and successful_chunks > 3:
+            info(f"🎯 Chunked network complete: {total_nodes} nodes from {successful_chunks} chunks", 'road_network_db')
+            
+            # Keep largest connected component
+            largest_cc = max(nx.strongly_connected_components(merged_network), key=len)
+            merged_network = merged_network.subgraph(largest_cc).copy()
+            info(f"🔗 Largest connected component: {len(merged_network.nodes)} nodes", 'road_network_db')
+            
+            # Add attributes and enhance
+            merged_network = self._add_network_attributes(merged_network)
+            return self._enhance_network_connectivity(merged_network)
+        
+        return None
 
     def _create_merged_city_networks(self) -> Optional[nx.MultiDiGraph]:
         """Create network by merging multiple city networks"""
         try:
             info("🏙️ Trying merged city networks approach...", 'road_network_db')
             
-            # Major Bay Area cities with larger radius
+            # Comprehensive Bay Area cities for maximum coverage
             cities = [
-                ("San Francisco, California, USA", (37.7749, -122.4194), 12000),
-                ("Oakland, California, USA", (37.8044, -122.2712), 10000),
-                ("San Jose, California, USA", (37.3382, -122.0922), 15000),
-                ("Fremont, California, USA", (37.5485, -122.9886), 8000),
-                ("Palo Alto, California, USA", (37.4419, -122.1430), 8000),
+                # Major cities - core coverage
+                ("San Francisco, California, USA", (37.7749, -122.4194), 15000),
+                ("Oakland, California, USA", (37.8044, -122.2712), 12000),
+                ("San Jose, California, USA", (37.3382, -122.0922), 18000),
+                ("Berkeley, California, USA", (37.8715, -122.2730), 8000),
+                
+                # Peninsula coverage
+                ("Palo Alto, California, USA", (37.4419, -122.1430), 10000),
+                ("Mountain View, California, USA", (37.3861, -122.0839), 8000),
+                ("Redwood City, California, USA", (37.4852, -122.2364), 8000),
+                ("San Mateo, California, USA", (37.5630, -122.3255), 7000),
+                
+                # South Bay expansion
+                ("Santa Clara, California, USA", (37.3541, -122.0322), 8000),
+                ("Sunnyvale, California, USA", (37.3688, -122.0363), 7000),
+                ("Cupertino, California, USA", (37.3230, -122.0322), 6000),
+                
+                # East Bay coverage  
+                ("Fremont, California, USA", (37.5485, -121.9886), 10000),  # Fixed longitude
+                ("Hayward, California, USA", (37.6688, -122.0808), 8000),
+                ("Union City, California, USA", (37.5939, -122.0438), 6000),
+                ("San Leandro, California, USA", (37.7249, -122.1561), 6000),
             ]
             
             merged_network = None

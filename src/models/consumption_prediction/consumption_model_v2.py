@@ -14,7 +14,19 @@ from sklearn.preprocessing import OrdinalEncoder
 from sklearn.model_selection import RandomizedSearchCV
 import optuna
 optuna.logging.set_verbosity(optuna.logging.WARNING)
-from sklearn.utils import parallel_backend
+try:
+    from sklearn.utils import parallel_backend
+except ImportError:
+    try:
+        # For scikit-learn >= 1.3.0
+        from sklearn.utils.parallel_backend import parallel_backend
+    except ImportError:
+        # Fallback: create a dummy parallel_backend context manager
+        import contextlib
+        @contextlib.contextmanager
+        def parallel_backend(*args, **kwargs):
+            yield
+        print("Warning: parallel_backend not available, using dummy implementation")
 
 warnings.filterwarnings('ignore')
 #from lightgbm import LGBMRegressor
@@ -55,13 +67,17 @@ class SegmentEnergyPredictor:
     Only uses features available before the segment is driven (no look-ahead bias).
     """
     def __init__(self, data_dir: str = None):
-        self.data_dir = data_dir or Path(__file__).parent.parent.parent.parent / "data" / "synthetic"
+        if data_dir is None:
+            self.data_dir = Path(__file__).parent.parent.parent.parent / "data" / "synthetic"
+        else:
+            self.data_dir = Path(data_dir)
         self.models = {}
         self.scalers = {}
         self.encoders = {}
         self.feature_importance = {}
         self.model_performance = {}
         self.feature_columns = None
+        self.model_loaded = False
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
 
@@ -79,6 +95,13 @@ class SegmentEnergyPredictor:
 
     def engineer_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """Professional, detailed feature engineering for segment-level prediction."""
+        # Ensure critical numeric columns are properly typed
+        critical_numeric_cols = ['distance_m', 'energy_kwh', 'start_elevation_m', 'end_elevation_m', 
+                               'start_speed_kmh', 'end_speed_kmh']
+        for col in critical_numeric_cols:
+            if col in data.columns:
+                data[col] = pd.to_numeric(data[col], errors='coerce')
+        
         # --- Spatial features ---
         data['distance_km'] = data['distance_m'] / 1000
         # --- Distance bins ---
@@ -175,9 +198,93 @@ class SegmentEnergyPredictor:
         print(features.columns)
         features.to_csv(Path(__file__).parent / 'segment_model_features.csv', index=False)
         target.to_csv(Path(__file__).parent / 'segment_model_target.csv', index=False)
-        
+        self.feature_columns = features.columns.tolist()
+        self.feature_medians = features.median(numeric_only=True).to_dict()
         return features, target
 
+    def align_features_for_inference(self, df_fe: pd.DataFrame) -> pd.DataFrame:
+        """
+        Align runtime engineered features (df_fe) to the trained schema (self.feature_columns).
+        - Add missing columns with training medians (self.feature_medians) or zeros.
+        - Drop any extra columns.
+        - Preserve ordering of columns used in training.
+        - Handle categorical encoding for string values.
+        """
+        if not hasattr(self, "feature_columns") or self.feature_columns is None:
+            # fallback: numeric-only
+            return df_fe.select_dtypes(include=[np.number]).fillna(0.0)
+
+        X = df_fe.copy()
+
+        # Handle categorical encoding for string values before alignment
+        # Note: routing_features.py should now handle most categorical encoding
+        # This is a fallback for any remaining string values
+        if hasattr(self, "encoders") and self.encoders:
+            for col in X.columns:
+                if col in self.encoders and X[col].dtype == 'object':
+                    try:
+                        # Handle unseen categories by mapping to most common class (0)
+                        values = X[col].astype(str)
+                        encoded_values = []
+                        for val in values:
+                            if val in self.encoders[col].classes_:
+                                encoded_values.append(self.encoders[col].transform([val])[0])
+                            else:
+                                encoded_values.append(0)  # Default to first class
+                        X[col] = encoded_values
+                    except Exception as e:
+                        # If encoding fails, use a default value
+                        X[col] = 0
+        
+        # Handle driving_style_encoded specifically (created by routing_features.py)
+        if 'driving_style' in X.columns and X['driving_style'].dtype == 'object':
+            # Map driving_style strings to encoded values
+            mapping = {'eco_friendly': 0, 'normal': 1, 'aggressive': 2}
+            X['driving_style_encoded'] = X['driving_style'].map(mapping).fillna(1).astype(int)
+            # Remove the original string column
+            X = X.drop(columns=['driving_style'], errors='ignore')
+
+        # get required feature list
+        cols_needed = list(self.feature_columns)
+
+        # add missings with medians (if available) else 0.0
+        med = getattr(self, "feature_medians", {}) or {}
+        missing = [c for c in cols_needed if c not in X.columns]
+        if missing:
+            for c in missing:
+                fill_val = med.get(c, 0.0)
+                X[c] = fill_val
+
+        # drop extras
+        extras = [c for c in X.columns if c not in cols_needed]
+        if extras:
+            X = X.drop(columns=extras, errors="ignore")
+
+        # reorder & final cleanup
+        # Convert to numeric more safely, handling any remaining string values
+        for col in cols_needed:
+            if col in X.columns:
+                try:
+                    X[col] = pd.to_numeric(X[col], errors='coerce').fillna(0.0)
+                except Exception as e:
+                    # If conversion fails, use default value
+                    X[col] = 0.0
+        
+        X = X[cols_needed].fillna(0.0)
+
+        # log once if needed
+        if not getattr(self, "_inference_schema_logged", False):
+            if missing:
+                from src.utils.logger import warning
+                warning(f"Inference: added missing columns with fill values: {missing}", "optimization")
+            if extras:
+                from src.utils.logger import debug
+                debug(f"Inference: dropped extra columns: {extras}", "optimization")
+            self._inference_schema_logged = True
+
+        return X
+
+    
     def smape(self, y_true, y_pred):
         return np.mean(2 * np.abs(y_pred - y_true) / (np.abs(y_true) + np.abs(y_pred) + 1e-8)) * 100
 
@@ -223,8 +330,17 @@ class SegmentEnergyPredictor:
 
     def get_best_model(self) -> str:
         """Select best model based on MAE."""
-        best_model = min(self.model_performance.keys(), key=lambda x: self.model_performance[x].get('MAE', float('inf')))
-        return best_model
+        # Check if we have a best_model_name stored (from lightweight model)
+        if hasattr(self, 'best_model_name') and self.best_model_name:
+            return self.best_model_name
+        
+        # Fall back to finding the best model based on MAE
+        if self.model_performance:
+            best_model = min(self.model_performance.keys(), key=lambda x: self.model_performance[x].get('MAE', float('inf')))
+            return best_model
+        
+        # If no models available, return None
+        return None
     
     
     def tune_xgboost(self, X_train, y_train):
@@ -301,7 +417,11 @@ class SegmentEnergyPredictor:
         rf = RandomForestRegressor(random_state=42, n_jobs=-1)
         rs = RandomizedSearchCV(rf, param_distributions=param_dist, n_iter=30, cv=3,
                                 scoring='neg_root_mean_squared_error', n_jobs=-1, verbose=0)
-        with parallel_backend('threading'):
+        try:
+            with parallel_backend('threading'):
+                rs.fit(X_train, y_train)
+        except Exception:
+            # Fallback to regular fitting if parallel_backend fails
             rs.fit(X_train, y_train)
         self.models['random_forest_tuned'] = rs.best_estimator_
         self.logger.info(f"Best Random Forest params: {rs.best_params_}")
@@ -320,7 +440,11 @@ class SegmentEnergyPredictor:
         gb = GradientBoostingRegressor(random_state=42)
         rs = RandomizedSearchCV(gb, param_distributions=param_dist, n_iter=30, cv=3,
                                 scoring='neg_root_mean_squared_error', n_jobs=-1, verbose=0)
-        with parallel_backend('threading'):
+        try:
+            with parallel_backend('threading'):
+                rs.fit(X_train, y_train)
+        except Exception:
+            # Fallback to regular fitting if parallel_backend fails
             rs.fit(X_train, y_train)
         self.models['gradient_boosting_tuned'] = rs.best_estimator_
         self.logger.info(f"Best Gradient Boosting params: {rs.best_params_}")
@@ -343,7 +467,11 @@ class SegmentEnergyPredictor:
         lgbm = LGBMRegressor(random_state=42, n_jobs=-1)
         rs = RandomizedSearchCV(lgbm, param_distributions=param_dist, n_iter=30, cv=3,
                                 scoring='neg_root_mean_squared_error', n_jobs=-1, verbose=0)
-        with parallel_backend('threading'):
+        try:
+            with parallel_backend('threading'):
+                rs.fit(X_train, y_train)
+        except Exception:
+            # Fallback to regular fitting if parallel_backend fails
             rs.fit(X_train, y_train)
         self.models['lightgbm_tuned'] = rs.best_estimator_
         self.logger.info(f"Best LightGBM params: {rs.best_params_}")
@@ -363,7 +491,11 @@ class SegmentEnergyPredictor:
         cb = CatBoostRegressor(random_state=42, verbose=0)
         rs = RandomizedSearchCV(cb, param_distributions=param_dist, n_iter=30, cv=3,
                                 scoring='neg_root_mean_squared_error', n_jobs=-1, verbose=0)
-        with parallel_backend('threading'):
+        try:
+            with parallel_backend('threading'):
+                rs.fit(X_train, y_train)
+        except Exception:
+            # Fallback to regular fitting if parallel_backend fails
             rs.fit(X_train, y_train)
         self.models['catboost_tuned'] = rs.best_estimator_
         self.logger.info(f"Best CatBoost params: {rs.best_params_}")
@@ -406,7 +538,8 @@ class SegmentEnergyPredictor:
             'encoders': self.encoders,
             'feature_importance': self.feature_importance,
             'model_performance': self.model_performance,
-            'feature_columns': self.feature_columns
+            'feature_columns': self.feature_columns,
+            'feature_medians': getattr(self, 'feature_medians', {})
         }
         joblib.dump(model_data, model_path)
         self.logger.info(f"Models saved to {model_path}")
@@ -419,7 +552,12 @@ class SegmentEnergyPredictor:
         self.feature_importance = model_data['feature_importance']
         self.model_performance = model_data['model_performance']
         self.feature_columns = model_data.get('feature_columns', None)
+        self.feature_medians = model_data.get('feature_medians', {})
+        self.best_model_name = model_data.get('best_model_name', None)  # For lightweight models
+        self.model_loaded = True
         self.logger.info(f"Models loaded from {model_path}")
+        if self.best_model_name:
+            self.logger.info(f"Best model: {self.best_model_name}")
 
     def explain_with_shap(self, model_name: str, X_sample: pd.DataFrame):
         """Explain model predictions using SHAP values and plot beeswarm."""
@@ -456,7 +594,7 @@ def main():
     # --- Hyperparameter tuning for XGBoost with Optuna ---
     if XGBOOST_AVAILABLE:
         print("Tuning XGBoost hyperparameters with Optuna...")
-        xgb_model=predictor.tune_xgboost_optuna(X_train, y_train, n_trials=200  , timeout=600)
+        xgb_model=predictor.tune_xgboost_optuna(X_train, y_train, n_trials=100  , timeout=600)
         predictor.print_model_metrics(xgb_model, X_val, y_val, "xgboost_optuna")
         
     print("Tuning Random Forest...")
