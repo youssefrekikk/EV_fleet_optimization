@@ -51,7 +51,7 @@ The **EV Fleet Optimization Studio** is a platform that combines physics-based e
 
 ```bash
 # Clone and launch
-git clone https://github.com/your-username/ev-fleet-optimization.git
+git clone https://github.com/youssefrekikk/EV_fleet_optimization.git
 cd ev-fleet-optimization
 
 # Build and run
@@ -67,7 +67,7 @@ docker-compose up --build
 
 ```bash
 # Clone and setup
-git clone https://github.com/your-username/ev-fleet-optimization.git
+git clone https://github.com/youssefrekikk/EV_fleet_optimization.git
 cd ev-fleet-optimization
 
 # Install and launch
