@@ -26,7 +26,8 @@ The **EV Fleet Optimization Studio** is a platform that combines physics-based e
 
 
 - [🎯 Project Overview](#-project-overview)
-- [🚀 Installation & Quick Start](#-installation--quick-start)          
+- [🚀 Installation & Quick Start](#-installation--quick-start)        
+- [🎬 Demo & Screenshots](#-demo--screenshots) 
 - [📈 Interactive Dashboard Workflow](#-interactive-dashboard-workflow)  
 - [⚙️ Core Features](#️-core-features)
 - [📊 Energy Modeling](#-energy-modeling)                               
@@ -34,7 +35,6 @@ The **EV Fleet Optimization Studio** is a platform that combines physics-based e
 - [🤖 Machine Learning Pipeline](#-machine-learning-pipeline)
 - [🗺️ Multi-Objective Optimization Framework](#️-multi-objective-optimization-framework)  
 - [🔋 Battery & Charging Optimization](#-battery--charging-optimization)
-- [🎬 Demo & Screenshots](#-demo--screenshots)
 - [⚡ Performance Optimizations](#-performance-optimizations)
 - [🔧 Advanced Configuration](#-advanced-configuration)
 - [🚀 Future Improvements](#-future-improvements)           
@@ -74,6 +74,26 @@ cd ev-fleet-optimization
 pip install -r requirements.txt
 streamlit run app/streamlit_app.py
 ```
+
+
+## 🎬 Demo & Screenshots
+
+
+
+<img src="screenshots/cap1.png" alt="Cap 1" width="300"/>
+<img src="screenshots/cap2.png" alt="Cap 2" width="300"/>
+<img src="screenshots/cap3.png" alt="Cap 3" width="300"/>
+<img src="screenshots/cap4.png" alt="Cap 4" width="300"/>
+<img src="screenshots/cap5.png" alt="Cap 5" width="300"/>
+<img src="screenshots/cap6.png" alt="Cap 6" width="300"/>
+<img src="screenshots/cap7.png" alt="Cap 7" width="300"/>
+<img src="screenshots/cap8.png" alt="Cap 8" width="300"/>
+<img src="screenshots/cap9.png" alt="Cap 9" width="300"/>
+<img src="screenshots/cap10.png" alt="Cap 10" width="300"/>
+<img src="screenshots/cap11.png" alt="Cap 11" width="300"/>
+<img src="screenshots/cap12.png" alt="Cap 11" width="300"/>
+---
+
 
 
 ## 📈 Interactive Dashboard Workflow
@@ -542,23 +562,6 @@ def optimize_charging_schedule_lp(path_segments, charging_stations,
 
 ---
 
-## 🎬 Demo & Screenshots
-
-
-
-<img src="screenshots/cap1.png" alt="Cap 1" width="300"/>
-<img src="screenshots/cap2.png" alt="Cap 2" width="300"/>
-<img src="screenshots/cap3.png" alt="Cap 3" width="300"/>
-<img src="screenshots/cap4.png" alt="Cap 4" width="300"/>
-<img src="screenshots/cap5.png" alt="Cap 5" width="300"/>
-<img src="screenshots/cap6.png" alt="Cap 6" width="300"/>
-<img src="screenshots/cap7.png" alt="Cap 7" width="300"/>
-<img src="screenshots/cap8.png" alt="Cap 8" width="300"/>
-<img src="screenshots/cap9.png" alt="Cap 9" width="300"/>
-<img src="screenshots/cap10.png" alt="Cap 10" width="300"/>
-<img src="screenshots/cap11.png" alt="Cap 11" width="300"/>
-<img src="screenshots/cap12.png" alt="Cap 11" width="300"/>
----
 
 ## ⚡ Performance Optimizations
 
