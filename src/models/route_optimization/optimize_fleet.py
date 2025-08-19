@@ -478,23 +478,37 @@ def main(
     for d in tqdm(days, desc="Days"):
         date = datetime.fromisoformat(d)
         # Apply CLI overrides for SOC objective if provided
-        if args.soc_objective is not None:
-            OPTIMIZATION_CONFIG['soc_objective'] = args.soc_objective
-        if args.alpha_usd_per_hour is not None:
-            OPTIMIZATION_CONFIG['alpha_usd_per_hour'] = args.alpha_usd_per_hour
-        if args.beta_kwh_to_usd is not None:
-            OPTIMIZATION_CONFIG['beta_kwh_to_usd'] = args.beta_kwh_to_usd
-        if args.planning_mode is not None:
-            OPTIMIZATION_CONFIG['planning_mode'] = args.planning_mode
-        if args.reserve_soc is not None:
-            OPTIMIZATION_CONFIG['reserve_soc'] = args.reserve_soc
-        if args.reserve_kwh is not None:
-            OPTIMIZATION_CONFIG['reserve_kwh'] = args.reserve_kwh
-        if args.horizon_trips is not None:
-            OPTIMIZATION_CONFIG['horizon_trips'] = args.horizon_trips
-        if args.horizon_hours is not None:
-            OPTIMIZATION_CONFIG['horizon_hours'] = args.horizon_hours
+        if args is not None:
+            if args.soc_objective is not None:
+                OPTIMIZATION_CONFIG['soc_objective'] = args.soc_objective
+            if args.alpha_usd_per_hour is not None:
+                OPTIMIZATION_CONFIG['alpha_usd_per_hour'] = args.alpha_usd_per_hour
+            if args.beta_kwh_to_usd is not None:
+                OPTIMIZATION_CONFIG['beta_kwh_to_usd'] = args.beta_kwh_to_usd
+            if args.planning_mode is not None:
+                OPTIMIZATION_CONFIG['planning_mode'] = args.planning_mode
+            if args.reserve_soc is not None:
+                OPTIMIZATION_CONFIG['reserve_soc'] = args.reserve_soc
+            if args.reserve_kwh is not None:
+                OPTIMIZATION_CONFIG['reserve_kwh'] = args.reserve_kwh
+            if args.horizon_trips is not None:
+                OPTIMIZATION_CONFIG['horizon_trips'] = args.horizon_trips
+            if args.horizon_hours is not None:
+                OPTIMIZATION_CONFIG['horizon_hours'] = args.horizon_hours
 
+        daily_results = []
+        for d in tqdm(days, desc="Days"):
+            date = datetime.fromisoformat(d)
+            res = optimize_fleet_day(
+                G, routes, fleet, weather, date,
+                algorithm=algorithm,
+                soc_planning=soc_planning,      # <--- this now works correctly
+                validate_physics=validate_physics,
+                trip_sample_frac=trip_sample_frac,
+                trip_sample_n=trip_sample_n,
+                data_dir=data_dir,
+            )
+            daily_results.append(res)
         res = optimize_fleet_day(
             G, routes, fleet, weather, date,
             algorithm=algorithm,

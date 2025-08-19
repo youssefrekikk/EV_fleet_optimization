@@ -196,7 +196,7 @@ class EnergyWeightFunction:
         }
 
     
-
+    
     def _batch_predict_edges(self, edges: List[Tuple[Any, Any, int, Dict[str, Any]]]) -> Dict[Tuple[Any, Any, int], float]:
         """
         Batch predict energy for multiple edges at once with schema alignment.
@@ -204,6 +204,7 @@ class EnergyWeightFunction:
         aligns to the trained predictor's feature_columns (fills missing cols), and returns
         per-edge kWh predictions. Caches results and is defensive against missing attributes.
         """
+        
         if not edges:
             return {}
 
@@ -451,7 +452,29 @@ class EnergyWeightFunction:
         self.lru_cache.put(cache_key, weight)
         return weight
 
+class _WeightFnWrapper:
+    """
+    Wraps a scalar weight function so it can be used in both:
+      - NetworkX (callable(u, v, data) -> float)
+      - Batched predictions via _batch_predict_edges(batch)
+    """
+    def __init__(self, fn):
+        self._fn = fn
 
+    def __call__(self, u, v, data):
+        # Ensure a numeric finite float is returned
+        w = float(self._fn(u, v, data))
+        return w
+
+    def _batch_predict_edges(self, batch):
+        """
+        batch: List[ (u, v, key, edata) ]
+        returns: Dict[(u, v, key), float]
+        """
+        out = {}
+        for (u, v, key, edata) in batch:
+            out[(u, v, key)] = float(self._fn(u, v, edata))
+        return out
 class SegmentEnergyRouter:
     """Utility to compute energy-optimal routes using the trained segment-level predictor."""
 
@@ -674,9 +697,16 @@ class SegmentEnergyRouter:
         heuristic_kwh_per_km should be a lower-bound estimate of consumption per km.
         """
         info(f"Routing (A*) from {origin} to {destination}", "optimization")
-        weight_fn = self.make_weight_function(
+
+        # Fast fail if there is no path in the directed multigraph
+        if not nx.has_path(G, origin, destination):
+            raise nx.NetworkXNoPath(f"No path from {origin} to {destination}")
+
+        raw_weight_fn = self.make_weight_function(
             G, vehicle_context, driver_context, weather_context, departure_time, shared_cache=shared_cache
         )
+        # Always have a callable with predictable behavior
+        weight_fn = raw_weight_fn if hasattr(raw_weight_fn, "__call__") else _WeightFnWrapper(raw_weight_fn)
 
         def h(u: Any, v: Any) -> float:
             d_m = self._node_distance_m(G, u, v)
@@ -696,9 +726,21 @@ class SegmentEnergyRouter:
                 kwh_per_km = max(0.0, float(heuristic_kwh_per_km))
             return (d_m / 1000.0) * kwh_per_km
 
-        path = nx.astar_path(G, origin, destination, heuristic=h, weight=weight_fn)
+        # Wrap the weight to guard against NaN/inf/negatives
+        import math
+        def safe_weight(u, v, data):
+            w = float(weight_fn(u, v, data))
+            if not math.isfinite(w) or w < 0:
+                # Skip bad edges by returning +inf so NetworkX won't use them
+                return float("inf")
+            return w
+
+        path = nx.astar_path(G, origin, destination, heuristic=h, weight=safe_weight)
         info(f"A* path length: {len(path)} nodes", "optimization")
         return path
+
+
+
 
     def custom_astar_batched(
         self,
@@ -718,17 +760,25 @@ class SegmentEnergyRouter:
         This avoids the per-edge ML calls that make NetworkX's A* slow.
         """
         info(f"Custom A* (batched) from {origin} to {destination}", "optimization")
-        
-        # Create weight function for batched predictions
-        weight_fn = self.make_weight_function(
+
+        # Fast fail if there is no path in the directed multigraph
+        if not nx.has_path(G, origin, destination):
+            raise nx.NetworkXNoPath(f"No path from {origin} to {destination}")
+
+        # Create weight function and ensure it supports batching
+        raw_weight_fn = self.make_weight_function(
             G, vehicle_context, driver_context, weather_context, departure_time, shared_cache=shared_cache
         )
-        
-        # Improved heuristic
+        if hasattr(raw_weight_fn, "_batch_predict_edges") and hasattr(raw_weight_fn, "__call__"):
+            weight_fn = raw_weight_fn
+        else:
+            # Wrap a plain callable so we reliably have _batch_predict_edges
+            weight_fn = _WeightFnWrapper(raw_weight_fn)
+
+        # Heuristic (same as above)
         def h(u: Any, v: Any) -> float:
             d_m = self._node_distance_m(G, u, v)
             if heuristic_kwh_per_km is None:
-                # Physics-informed lower bound using rolling resistance only
                 try:
                     model_name = vehicle_context.get("model")
                     specs = EV_MODELS.get(model_name, {})
@@ -742,87 +792,108 @@ class SegmentEnergyRouter:
             else:
                 kwh_per_km = max(0.0, float(heuristic_kwh_per_km))
             return (d_m / 1000.0) * kwh_per_km
-        
-        # A* implementation with batched predictions
-        import heapq
-        
-        # Get batch size from config
+
+        import heapq, math
+
         if batch_size is None:
-            batch_size = OPTIMIZATION_CONFIG.get("batch_size", 50)
-        
+            batch_size = int(OPTIMIZATION_CONFIG.get("batch_size", 50))
+
+        # Anti-infinite-loop guard
+        max_iterations = int(OPTIMIZATION_CONFIG.get("max_astar_iterations", 200000))
+        iteration = 0
+
         # Priority queue: (f_score, node)
-        open_set = [(0, origin)]
+        open_set = [(0.0, origin)]
         heapq.heapify(open_set)
-        
+
         # g_score[node] = cost from start to node
-        g_score = {origin: 0}
-        
+        g_score = {origin: 0.0}
+
         # f_score[node] = g_score[node] + heuristic(node, goal)
         f_score = {origin: h(origin, destination)}
-        
+
         # came_from[node] = previous node in optimal path
         came_from = {}
-        
+
         # Track nodes in open set for O(1) lookup
         open_set_nodes = {origin}
-        
+
         # Local cache for edge weights in this search
-        local_edge_cache = {}
-        
+        local_edge_cache: Dict[Tuple[Any, Any, int], float] = {}
+
         while open_set:
+            iteration += 1
+            if iteration > max_iterations:
+                raise nx.NetworkXNoPath(
+                    f"A* exceeded {max_iterations} iterations from {origin} to {destination}"
+                )
+
             current_f, current = heapq.heappop(open_set)
-            open_set_nodes.remove(current)
-            
+            if current in open_set_nodes:
+                open_set_nodes.remove(current)
+
             if current == destination:
                 # Reconstruct path
-                path = []
+                path = [current]
                 while current in came_from:
-                    path.append(current)
                     current = came_from[current]
-                path.append(origin)
+                    path.append(current)
                 path.reverse()
                 info(f"Custom A* path length: {len(path)} nodes", "optimization")
                 return path
-            
-            # Gather all outgoing edges for batch prediction
+
+            # Gather outgoing edges requiring prediction
             outgoing_edges = []
             for _, neighbor, key, edata in G.out_edges(current, keys=True, data=True):
                 edge_key = (current, neighbor, key)
                 if edge_key not in local_edge_cache:
                     outgoing_edges.append((current, neighbor, key, edata))
-            
-            # Batch predict edge weights if we have edges to process
+
+            # Batched predictions (with chunking)
             if outgoing_edges:
-                # Process in batches to avoid memory issues
-                for i in range(0, len(outgoing_edges), batch_size):
-                    batch = outgoing_edges[i:i + batch_size]
-                    batch_results = weight_fn._batch_predict_edges(batch)
-                    local_edge_cache.update(batch_results)
-            
-            # Process each neighbor
+                if OPTIMIZATION_CONFIG.get("enable_batched_predictions", True):
+                    for i in range(0, len(outgoing_edges), batch_size):
+                        batch = outgoing_edges[i:i + batch_size]
+                        try:
+                            batch_results = weight_fn._batch_predict_edges(batch)
+                        except Exception as e:
+                            # Fallback to scalar predictions if batch fails
+                            warning(f"Batch prediction failed ({e}); falling back to scalar.", "optimization")
+                            batch_results = {}
+                            for (u, v, key, edata) in batch:
+                                batch_results[(u, v, key)] = float(weight_fn(u, v, edata))
+                        local_edge_cache.update(batch_results)
+                else:
+                    # Force scalar predictions
+                    for (u, v, key, edata) in outgoing_edges:
+                        local_edge_cache[(u, v, key)] = float(weight_fn(u, v, edata))
+            # Process neighbors
             for _, neighbor, key, edata in G.out_edges(current, keys=True, data=True):
                 edge_key = (current, neighbor, key)
                 weight = local_edge_cache.get(edge_key)
-                
                 if weight is None:
-                    # Fallback to single edge prediction
-                    weight = weight_fn(current, neighbor, edata)
+                    # Fallback to single-edge prediction
+                    weight = float(weight_fn(current, neighbor, edata))
                     local_edge_cache[edge_key] = weight
-                
-                tentative_g_score = g_score[current] + weight
-                
-                if tentative_g_score < g_score.get(neighbor, float('inf')):
-                    # This path to neighbor is better than any previous one
+
+                # Guard against invalid weights
+                if not math.isfinite(weight) or weight < 0:
+                    warning(f"Skipping invalid weight {weight} on edge {edge_key}", "optimization")
+                    continue
+
+                tentative_g = g_score[current] + weight
+                if tentative_g < g_score.get(neighbor, float('inf')):
                     came_from[neighbor] = current
-                    g_score[neighbor] = tentative_g_score
-                    f_score[neighbor] = tentative_g_score + h(neighbor, destination)
-                    
+                    g_score[neighbor] = tentative_g
+                    f = tentative_g + h(neighbor, destination)
+                    f_score[neighbor] = f
                     if neighbor not in open_set_nodes:
-                        heapq.heappush(open_set, (f_score[neighbor], neighbor))
+                        heapq.heappush(open_set, (f, neighbor))
                         open_set_nodes.add(neighbor)
-        
+
         # No path found
         raise nx.NetworkXNoPath(f"No path from {origin} to {destination}")
+
 
     def find_energy_optimal_path(
         self,
@@ -835,7 +906,7 @@ class SegmentEnergyRouter:
         departure_time: datetime,
         algorithm: Optional[str] = None,
         shared_cache: Optional[Dict[Tuple[Any, Any, int, Tuple], float]] = None,
-    ) -> List[Any]:
+    ) -> List[Any]: 
         algo = (algorithm or OPTIMIZATION_CONFIG.get("route_optimization_algorithm", "dijkstra")).lower()
         info(f"find_energy_optimal_path using {algo}", "optimization")
         
