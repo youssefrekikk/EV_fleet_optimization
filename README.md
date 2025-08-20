@@ -55,7 +55,7 @@ git clone https://github.com/youssefrekikk/EV_fleet_optimization.git
 cd ev-fleet-optimization
 
 # Build and run
-docker-compose up --build
+docker compose up --build
 
 # Access dashboard: http://localhost:8501
 ```
